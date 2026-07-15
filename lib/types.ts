@@ -21,6 +21,21 @@ export interface EnrollmentStatPoint {
   count: number;
 }
 
+export interface YearlyFeeBreakdownItem {
+  name: string;
+  total: string;
+}
+
+// One school year's frozen fee total — powers the dashboard's "this school
+// year" tile (resets at year rollover) and the per-year breakdown chart.
+// `items` and `enrollmentCount` power the chart's click-through summary modal.
+export interface YearlyFeeTotal {
+  year: string;
+  total: string;
+  enrollmentCount: number;
+  items: YearlyFeeBreakdownItem[];
+}
+
 export type StatsGroupBy = "day" | "week" | "month" | "year";
 
 export type Gender = "MALE" | "FEMALE";
@@ -32,6 +47,7 @@ export interface StudentSummary {
   studentNumber: string;
   studentName: string;
   nickname: string | null;
+  gender: Gender;
 }
 
 export interface EscortSummary {

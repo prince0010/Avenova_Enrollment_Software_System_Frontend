@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, LabelList, XAxis, YAxis } from "recharts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Label as RechartsLabel,
+  LabelList,
+  Pie,
+  PieChart,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   ArrowDown,
   ArrowUp,
@@ -16,14 +27,20 @@ import {
   UserCheck,
   Banknote,
   GraduationCap,
+  PiggyBank,
 } from "lucide-react";
 import {
   getActiveUserCount,
   getEnrollmentStats,
-  getFeeStats,
+  getFeesByYear,
   listEnrollments,
 } from "@/lib/api-client";
-import type { Enrollment, EnrollmentStatPoint, StatsGroupBy } from "@/lib/types";
+import type {
+  Enrollment,
+  EnrollmentStatPoint,
+  StatsGroupBy,
+  YearlyFeeTotal,
+} from "@/lib/types";
 import { formatPeso } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -34,6 +51,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -57,6 +82,71 @@ const chartConfig = {
     theme: { light: "#2a78d6", dark: "#3987e5" },
   },
 } satisfies ChartConfig;
+
+// The validated categorical palette in its fixed CVD-safe order (see the
+// dataviz skill's palette reference) — never cycled, never reassigned by rank.
+const YEAR_COLOR_SLOTS = [
+  { light: "#2a78d6", dark: "#3987e5" }, // blue
+  { light: "#1baf7a", dark: "#199e70" }, // aqua
+  { light: "#eda100", dark: "#c98500" }, // yellow
+  { light: "#008300", dark: "#008300" }, // green
+  { light: "#4a3aa7", dark: "#9085e9" }, // violet
+  { light: "#e34948", dark: "#e66767" }, // red
+  { light: "#e87ba4", dark: "#d55181" }, // magenta
+  { light: "#eb6834", dark: "#d95926" }, // orange
+];
+const OTHER_YEARS_COLOR = { light: "#898781", dark: "#898781" };
+const MAX_YEAR_SLICES = 7;
+
+// One donut slice — either a single school year or the folded "Other"
+// bucket. `years` carries the underlying raw rows so a click can show a real
+// summary (itemized fees + enrollment count for a single year; a per-year
+// list for the folded bucket).
+export interface FeeSliceDatum {
+  key: string;
+  label: string;
+  total: number;
+  fill: string;
+  theme: { light: string; dark: string };
+  years: YearlyFeeTotal[];
+}
+
+// Builds the donut's data + ChartConfig from the raw per-year totals — the
+// 7 most recent years each get their own fixed slot color; anything older
+// folds into one "Other" slice (the categorical series-count ceiling, per
+// the dataviz skill: never generate a 9th hue).
+function buildYearlyFeeChart(feesByYear: YearlyFeeTotal[]) {
+  const sorted = [...feesByYear].sort((a, b) => Number(a.year) - Number(b.year));
+  const recent = sorted.slice(-MAX_YEAR_SLICES);
+  const older = sorted.slice(0, -MAX_YEAR_SLICES);
+
+  const data: FeeSliceDatum[] = recent.map((y, i) => ({
+    key: y.year,
+    label: y.year,
+    total: Number(y.total),
+    fill: `var(--color-${y.year})`,
+    theme: YEAR_COLOR_SLOTS[i % YEAR_COLOR_SLOTS.length],
+    years: [y],
+  }));
+
+  if (older.length > 0) {
+    data.unshift({
+      key: "other",
+      label: `Before ${recent[0]?.year ?? ""}`,
+      total: older.reduce((sum, y) => sum + Number(y.total), 0),
+      fill: "var(--color-other)",
+      theme: OTHER_YEARS_COLOR,
+      years: older,
+    });
+  }
+
+  const config: ChartConfig = {};
+  for (const d of data) {
+    config[d.key] = { label: d.label, theme: d.theme };
+  }
+
+  return { data, config };
+}
 
 function toLocalDateString(d: Date) {
   const y = d.getFullYear();
@@ -265,11 +355,12 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const [dayData, setDayData] = useState<EnrollmentStatPoint[] | null>(null);
   const [activeUsers, setActiveUsers] = useState<number | null>(null);
-  const [feeTotal, setFeeTotal] = useState<string | null>(null);
+  const [feesByYear, setFeesByYear] = useState<YearlyFeeTotal[] | null>(null);
   const [recentEnrollments, setRecentEnrollments] = useState<Enrollment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<StatsGroupBy>("month");
   const [showTable, setShowTable] = useState(false);
+  const [selectedFeeSlice, setSelectedFeeSlice] = useState<FeeSliceDatum | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -279,13 +370,13 @@ export default function DashboardPage() {
         const [stats, users, fees, enrollments] = await Promise.all([
           getEnrollmentStats("day"),
           getActiveUserCount(),
-          getFeeStats(),
+          getFeesByYear(),
           listEnrollments(),
         ]);
         if (!cancelled) {
           setDayData(stats.data);
           setActiveUsers(users.totalActiveUsers);
-          setFeeTotal(fees.totalEnrollmentFees);
+          setFeesByYear(fees.data);
           setRecentEnrollments(enrollments.enrollments.slice(0, 5));
         }
       } catch {
@@ -344,7 +435,24 @@ export default function DashboardPage() {
     return { current, diff, percentLabel };
   }, [chartData]);
 
-  const animatedFeeTotal = useCountUp(feeTotal === null ? null : Number(feeTotal));
+  const currentSchoolYear = String(new Date().getFullYear());
+
+  // Resets to 0 the moment the calendar rolls into a new school year — there's
+  // simply no row for that year yet until a fee gets frozen onto a confirmed
+  // enrollment. Past years stay fully visible in the donut below, not lost.
+  const currentYearFeeTotal =
+    feesByYear === null
+      ? null
+      : (feesByYear.find((y) => y.year === currentSchoolYear)?.total ?? "0");
+  const animatedFeeTotal = useCountUp(
+    currentYearFeeTotal === null ? null : Number(currentYearFeeTotal)
+  );
+
+  const feeChart = useMemo(
+    () => (feesByYear ? buildYearlyFeeChart(feesByYear) : null),
+    [feesByYear]
+  );
+  const feeGrandTotal = feesByYear?.reduce((sum, y) => sum + Number(y.total), 0) ?? 0;
 
   const todayLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -428,89 +536,209 @@ export default function DashboardPage() {
           </div>
         </CardHeader>
         <CardContent>
-          {dayData === null && !error ? (
-            <div className="flex h-72 items-end gap-2 px-2">
-              {[40, 65, 30, 80, 55, 90, 45, 70, 35, 60, 75, 50].map((h, i) => (
-                <Skeleton
-                  key={i}
-                  className="w-full"
-                  style={{ height: `${h}%` }}
-                />
-              ))}
-            </div>
-          ) : showTable ? (
-            <div className="max-h-72 overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Period</TableHead>
-                    <TableHead className="text-right">Enrollments</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...chartData].reverse().map((row) => (
-                    <TableRow key={row.period}>
-                      <TableCell>
-                        {formatPeriodLabel(row.period, groupBy)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {row.count}
-                      </TableCell>
-                    </TableRow>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div>
+              {dayData === null && !error ? (
+                <div className="flex h-72 items-end gap-2 px-2">
+                  {[40, 65, 30, 80, 55, 90, 45, 70, 35, 60, 75, 50].map((h, i) => (
+                    <Skeleton
+                      key={i}
+                      className="w-full"
+                      style={{ height: `${h}%` }}
+                    />
                   ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <ChartContainer config={chartConfig} className="h-72 w-full">
-              <BarChart data={chartData} margin={{ top: 20, right: 8 }}>
-                <CartesianGrid vertical={false} strokeWidth={1} />
-                <XAxis
-                  dataKey="period"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(v: string) => formatPeriodLabel(v, groupBy)}
-                />
-                <YAxis
-                  allowDecimals={false}
-                  tickLine={false}
-                  axisLine={false}
-                  width={32}
-                />
-                <ChartTooltip
-                  cursor={{ fill: "var(--muted)", opacity: 0.5 }}
-                  content={
-                    <ChartTooltipContent
-                      labelFormatter={(label) =>
-                        typeof label === "string"
-                          ? formatPeriodLabel(label, groupBy)
-                          : label
+                </div>
+              ) : showTable ? (
+                <div className="max-h-72 overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Period</TableHead>
+                        <TableHead className="text-right">Enrollments</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {[...chartData].reverse().map((row) => (
+                        <TableRow key={row.period}>
+                          <TableCell>
+                            {formatPeriodLabel(row.period, groupBy)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {row.count}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <ChartContainer config={chartConfig} className="h-72 w-full">
+                  <BarChart data={chartData} margin={{ top: 20, right: 8 }}>
+                    <CartesianGrid vertical={false} strokeWidth={1} />
+                    <XAxis
+                      dataKey="period"
+                      tickLine={false}
+                      axisLine={false}
+                      tickMargin={8}
+                      tickFormatter={(v: string) => formatPeriodLabel(v, groupBy)}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tickLine={false}
+                      axisLine={false}
+                      width={32}
+                    />
+                    <ChartTooltip
+                      cursor={{ fill: "var(--muted)", opacity: 0.5 }}
+                      content={
+                        <ChartTooltipContent
+                          labelFormatter={(label) =>
+                            typeof label === "string"
+                              ? formatPeriodLabel(label, groupBy)
+                              : label
+                          }
+                        />
                       }
                     />
-                  }
-                />
-                <Bar
-                  dataKey="count"
-                  fill="var(--color-count)"
-                  maxBarSize={24}
-                  radius={[4, 4, 0, 0]}
-                  animationDuration={900}
-                  animationEasing="ease-out"
-                >
-                  <LabelList
-                    dataKey="count"
-                    content={(props) => (
-                      <LatestBarLabel
-                        {...props}
-                        lastIndex={chartData.length - 1}
+                    <Bar
+                      dataKey="count"
+                      fill="var(--color-count)"
+                      maxBarSize={24}
+                      radius={[4, 4, 0, 0]}
+                      animationDuration={900}
+                      animationEasing="ease-out"
+                    >
+                      <LabelList
+                        dataKey="count"
+                        content={(props) => (
+                          <LatestBarLabel
+                            {...props}
+                            lastIndex={chartData.length - 1}
+                          />
+                        )}
                       />
-                    )}
-                  />
-                </Bar>
-              </BarChart>
-            </ChartContainer>
-          )}
+                    </Bar>
+                  </BarChart>
+                </ChartContainer>
+              )}
+            </div>
+
+            {/* Fees by school year — sits beside the enrollments chart in the
+                same card. Click a slice (or its legend row) for that year's
+                itemized summary. */}
+            <div className="flex flex-col gap-2 border-t pt-4 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6">
+              <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                <PiggyBank className="size-4" />
+                Fees by school year
+              </span>
+              {feeChart === null ? (
+                <div className="flex justify-center py-4">
+                  <Skeleton className="size-40 rounded-full" />
+                </div>
+              ) : feeChart.data.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No confirmed fee snapshots yet.
+                </p>
+              ) : (
+                <div className="flex flex-col items-center gap-4">
+                  <ChartContainer
+                    config={feeChart.config}
+                    className="aspect-square h-44 w-44 shrink-0"
+                  >
+                    <PieChart>
+                      <ChartTooltip
+                        content={
+                          <ChartTooltipContent
+                            hideLabel
+                            formatter={(value, name) => (
+                              <div className="flex w-full items-center justify-between gap-3">
+                                <span className="text-muted-foreground">
+                                  {feeChart.config[String(name)]?.label ?? name}
+                                </span>
+                                <span className="font-mono font-medium text-foreground tabular-nums">
+                                  {formatPeso(value as number)}
+                                </span>
+                              </div>
+                            )}
+                          />
+                        }
+                      />
+                      <Pie
+                        data={feeChart.data}
+                        dataKey="total"
+                        nameKey="key"
+                        innerRadius={50}
+                        outerRadius={72}
+                        strokeWidth={2}
+                        stroke="var(--card)"
+                        animationDuration={900}
+                        animationEasing="ease-out"
+                        cursor="pointer"
+                        onClick={(_, index) => setSelectedFeeSlice(feeChart.data[index])}
+                      >
+                        {feeChart.data.map((d) => (
+                          <Cell key={d.key} fill={`var(--color-${d.key})`} />
+                        ))}
+                        <RechartsLabel
+                          content={({ viewBox }) => {
+                            if (!viewBox || !("cx" in viewBox) || viewBox.cx == null) {
+                              return null;
+                            }
+                            const { cx, cy } = viewBox;
+                            return (
+                              <text x={cx} y={cy} textAnchor="middle">
+                                <tspan
+                                  x={cx}
+                                  y={(cy ?? 0) - 4}
+                                  className="fill-foreground text-sm font-semibold"
+                                >
+                                  {formatPeso(feeGrandTotal)}
+                                </tspan>
+                                <tspan
+                                  x={cx}
+                                  y={(cy ?? 0) + 13}
+                                  className="fill-muted-foreground text-[10px]"
+                                >
+                                  All years
+                                </tspan>
+                              </text>
+                            );
+                          }}
+                        />
+                      </Pie>
+                    </PieChart>
+                  </ChartContainer>
+                  {/* Legend doubles as the table-view twin (every slice's
+                      exact peso value is always visible, not gated behind
+                      hover) and as a second, easier-to-hit click target. */}
+                  <ul className="flex w-full flex-col gap-1.5 text-sm">
+                    {[...feeChart.data].reverse().map((d) => (
+                      <li key={d.key}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFeeSlice(d)}
+                          className="flex w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted"
+                        >
+                          {/* Raw hex, not var(--color-…) — that CSS variable is
+                              only defined within ChartContainer's own DOM
+                              subtree, and this legend list renders as its
+                              sibling, outside that scope. */}
+                          <span
+                            className="size-2.5 shrink-0 rounded-[2px]"
+                            style={{ backgroundColor: d.theme.light }}
+                          />
+                          <span className="truncate text-muted-foreground">{d.label}</span>
+                          <span className="ml-auto shrink-0 font-mono font-medium tabular-nums">
+                            {formatPeso(d.total)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -521,12 +749,12 @@ export default function DashboardPage() {
         >
           <CardHeader>
             <CardTitle className="flex items-center justify-between text-sm font-normal text-muted-foreground">
-              Total fees — enrolled students
+              Total fees — {currentSchoolYear} school year
               <Banknote className="size-4" />
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-1">
-            {feeTotal === null ? (
+            {currentYearFeeTotal === null ? (
               <Skeleton className="h-9 w-40" />
             ) : (
               <span className="text-3xl font-semibold tabular-nums">
@@ -534,8 +762,8 @@ export default function DashboardPage() {
               </span>
             )}
             <p className="text-xs text-muted-foreground">
-              Sum of the fee snapshots frozen onto every confirmed enrollment — price
-              changes don&apos;t alter this retroactively.
+              Fee snapshots frozen onto {currentSchoolYear} confirmed enrollments — resets to
+              zero once the next school year starts. Earlier years stay in the chart below.
             </p>
           </CardContent>
         </Card>
@@ -599,6 +827,65 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog
+        open={selectedFeeSlice !== null}
+        onOpenChange={(open) => !open && setSelectedFeeSlice(null)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {selectedFeeSlice?.key === "other"
+                ? selectedFeeSlice.label
+                : `${selectedFeeSlice?.label} school year`}
+            </DialogTitle>
+            <DialogDescription>
+              {selectedFeeSlice && selectedFeeSlice.years.length === 1
+                ? `${selectedFeeSlice.years[0].enrollmentCount} confirmed enrollment${selectedFeeSlice.years[0].enrollmentCount === 1 ? "" : "s"} contributed this total.`
+                : "Combined total across these earlier school years — each year's own fees stay frozen and printable from its Statement of Account."}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedFeeSlice && (
+            <div className="flex flex-col gap-3">
+              <span className="text-3xl font-semibold tabular-nums">
+                {formatPeso(selectedFeeSlice.total)}
+              </span>
+              {selectedFeeSlice.years.length === 1 ? (
+                <ul className="flex flex-col divide-y text-sm">
+                  {selectedFeeSlice.years[0].items.map((item) => (
+                    <li
+                      key={item.name}
+                      className="flex items-center justify-between gap-4 py-1.5 first:pt-0 last:pb-0"
+                    >
+                      <span className="text-muted-foreground">{item.name}</span>
+                      <span className="font-mono font-medium tabular-nums">
+                        {formatPeso(item.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <ul className="flex flex-col divide-y text-sm">
+                  {[...selectedFeeSlice.years]
+                    .sort((a, b) => Number(b.year) - Number(a.year))
+                    .map((y) => (
+                      <li
+                        key={y.year}
+                        className="flex items-center justify-between gap-4 py-1.5 first:pt-0 last:pb-0"
+                      >
+                        <span className="text-muted-foreground">{y.year}</span>
+                        <span className="font-mono font-medium tabular-nums">
+                          {formatPeso(y.total)}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <DialogFooter showCloseButton />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import {
   deleteStudent,
   listStudents,
   listStudentEnrollments,
+  emailStatementOfAccount,
   ApiClientError,
 } from "@/lib/api-client";
 import type { Enrollment, Student, StudentEnrollment } from "@/lib/types";
@@ -93,9 +94,22 @@ function StudentsPageInner() {
     enrollments: StudentEnrollment[];
   } | null>(null);
   const [statementYearId, setStatementYearId] = useState<string>("");
+  // Transient status for the "Generate" button's email side effect — the
+  // dialog closes immediately for printing, so this surfaces on the page
+  // itself and clears on its own after a few seconds.
+  const [statementEmailNotice, setStatementEmailNotice] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
   const [deleting, setDeleting] = useState<Student | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!statementEmailNotice) return;
+    const t = setTimeout(() => setStatementEmailNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [statementEmailNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +196,23 @@ function StudentsPageInner() {
         user ? `${user.firstName} ${user.lastName}` : ""
       )
     );
+  }
+
+  // Fires alongside the print — the backend renders the same fee snapshot as
+  // an emailed backup copy for the parent's own records.
+  async function emailStatementCopy(enrollmentId: string) {
+    try {
+      const { message } = await emailStatementOfAccount(enrollmentId);
+      setStatementEmailNotice({ type: "success", message });
+    } catch (err) {
+      setStatementEmailNotice({
+        type: "error",
+        message:
+          err instanceof ApiClientError
+            ? err.message
+            : "Failed to email the statement of account.",
+      });
+    }
   }
 
   // A statement covers one school year's frozen fee snapshot. The admin
@@ -304,6 +335,17 @@ function StudentsPageInner() {
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {statementEmailNotice && (
+            <p
+              className={
+                statementEmailNotice.type === "error"
+                  ? "text-sm text-destructive"
+                  : "text-sm text-muted-foreground"
+              }
+            >
+              {statementEmailNotice.message}
+            </p>
+          )}
           {!error && students === null && (
             <div className="overflow-x-auto">
               <Table>
@@ -507,6 +549,7 @@ function StudentsPageInner() {
                 );
                 if (statementPicker && enrollment) {
                   printStatement(statementPicker.student, enrollment);
+                  void emailStatementCopy(enrollment.id);
                   setStatementPicker(null);
                 }
               }}

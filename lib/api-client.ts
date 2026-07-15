@@ -11,6 +11,7 @@ import type {
   StudentCreateInput,
   StudentEnrollment,
   StudentUpdateInput,
+  YearlyFeeTotal,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4001/api";
@@ -165,6 +166,13 @@ export async function getActiveUserCount() {
 // Sum of fee snapshots across confirmed enrollments (a Decimal string).
 export async function getFeeStats() {
   return apiFetchJson<{ totalEnrollmentFees: string }>("/stats/fees");
+}
+
+// Same fee snapshots, broken down by school year — the current year's entry
+// is the dashboard's "this school year" figure; past years stay queryable
+// here instead of disappearing at year rollover.
+export async function getFeesByYear() {
+  return apiFetchJson<{ data: YearlyFeeTotal[] }>("/stats/fees/by-year");
 }
 
 export async function createStudent(data: StudentCreateInput) {
@@ -405,4 +413,14 @@ export async function rejectEnrollment(id: string, reason?: string) {
     method: "POST",
     body: JSON.stringify({ reason }),
   });
+}
+
+// Emails a backup copy of this enrollment period's Statement of Account
+// (same fee snapshot as the printed version) to the student's own email —
+// the backend renders it server-side, so no body is needed here.
+export async function emailStatementOfAccount(enrollmentId: string) {
+  return apiFetchJson<{ ok: boolean; message: string }>(
+    `/enrollments/${enrollmentId}/statement/email`,
+    { method: "POST" }
+  );
 }

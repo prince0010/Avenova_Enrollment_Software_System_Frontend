@@ -88,7 +88,7 @@ export function CameraCapture({ onCapture }: { onCapture: (file: File) => void }
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Take photo</DialogTitle>
             <DialogDescription>

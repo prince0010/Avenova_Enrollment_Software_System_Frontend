@@ -8,7 +8,8 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: "Enrollment System",
+    title: "Avenova",
+    icon: path.join(__dirname, "../public/images/Avenova_logo.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

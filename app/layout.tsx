@@ -14,8 +14,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Enrollment System",
-  description: "Enrollment System admin client",
+  title: "Avenova",
+  description: "Avenova enrollment system admin client",
+  icons: {
+    icon: "/images/Avenova_logo.png",
+  },
 };
 
 export default function RootLayout({

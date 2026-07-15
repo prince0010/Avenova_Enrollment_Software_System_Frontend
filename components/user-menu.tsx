@@ -83,11 +83,13 @@ export function UserMenu() {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger className="flex items-center gap-2 rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-          <span className="text-sm text-muted-foreground">
+          <span className="text-sm font-medium text-[#0d6577]">
             {user.firstName} {user.lastName}
           </span>
           <Avatar>
-            <AvatarFallback>{initials}</AvatarFallback>
+            <AvatarFallback className="bg-[#117b8e]/10 text-[#117b8e]">
+              {initials}
+            </AvatarFallback>
           </Avatar>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">

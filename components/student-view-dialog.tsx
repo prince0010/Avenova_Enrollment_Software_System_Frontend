@@ -10,6 +10,7 @@ import {
   fetchStudentPhoto,
 } from "@/lib/api-client";
 import { formatPeso } from "@/lib/format";
+import { TruncatedText } from "@/components/truncated-text";
 import {
   Dialog,
   DialogContent,
@@ -40,11 +41,11 @@ function Section({
       <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </h3>
-      <dl className="grid grid-cols-[minmax(10rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
+      <dl className="grid grid-cols-[minmax(10rem,auto)_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         {visible.map(([label, value]) => (
           <div key={label} className="contents">
             <dt className="text-muted-foreground">{label}</dt>
-            <dd className="whitespace-pre-wrap">{value}</dd>
+            <dd>{typeof value === "string" ? <TruncatedText text={value} /> : value}</dd>
           </div>
         ))}
       </dl>
@@ -157,7 +158,7 @@ export function StudentViewDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
           {student && (
             <>
               <DialogHeader>

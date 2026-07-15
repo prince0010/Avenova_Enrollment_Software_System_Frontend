@@ -13,6 +13,7 @@ import {
   ApiClientError,
 } from "@/lib/api-client";
 import type { StudentCreateInput, Student } from "@/lib/types";
+import { BIRTH_CERT_MAX_BYTES, IMAGE_MAX_BYTES, fileSizeError } from "@/lib/upload-limits";
 import {
   Card,
   CardContent,
@@ -56,6 +57,7 @@ interface EscortEntry {
   name: string;
   phoneNumber: string;
   image: File | null;
+  imageError: string | null;
 }
 
 interface DiagnosisEntry {
@@ -130,14 +132,30 @@ export function StudentCreateWizard() {
   const [stepIndex, setStepIndex] = useState(0);
   const [maxCompletedIndex, setMaxCompletedIndex] = useState(0);
   const [values, setValues] = useState<Record<string, string | boolean>>(buildInitialValues);
-  const [escorts, setEscorts] = useState<EscortEntry[]>([{ name: "", phoneNumber: "", image: null }]);
+  const [escorts, setEscorts] = useState<EscortEntry[]>([
+    { name: "", phoneNumber: "", image: null, imageError: null },
+  ]);
   const [diagnoses, setDiagnoses] = useState<DiagnosisEntry[]>([
     { officialDiagnosis: "", dateOfDiagnosis: "" },
   ]);
   const [allergies, setAllergies] = useState<string[]>([]);
   const [customAllergy, setCustomAllergy] = useState("");
   const [birthCertificate, setBirthCertificate] = useState<File | null>(null);
+  const [birthCertificateError, setBirthCertificateError] = useState<string | null>(null);
   const [studentPhoto, setStudentPhoto] = useState<File | null>(null);
+  const [studentPhotoError, setStudentPhotoError] = useState<string | null>(null);
+
+  function handleBirthCertificateChange(file: File | null) {
+    const error = file ? fileSizeError(file, BIRTH_CERT_MAX_BYTES) : null;
+    setBirthCertificateError(error);
+    setBirthCertificate(error ? null : file);
+  }
+
+  function handleStudentPhotoChange(file: File | null) {
+    const error = file ? fileSizeError(file, IMAGE_MAX_BYTES) : null;
+    setStudentPhotoError(error);
+    setStudentPhoto(error ? null : file);
+  }
 
   // Thumbnail preview for the captured/selected photo; revoked when replaced.
   const photoPreviewUrl = useMemo(
@@ -208,7 +226,11 @@ export function StudentCreateWizard() {
   }
 
   function addEscort() {
-    setEscorts((list) => (list.length < MAX_ESCORTS ? [...list, { name: "", phoneNumber: "", image: null }] : list));
+    setEscorts((list) =>
+      list.length < MAX_ESCORTS
+        ? [...list, { name: "", phoneNumber: "", image: null, imageError: null }]
+        : list
+    );
   }
 
   function removeEscort(index: number) {
@@ -223,8 +245,13 @@ export function StudentCreateWizard() {
     setEscorts((list) => list.map((e, i) => (i === index ? { ...e, phoneNumber } : e)));
   }
 
-  function updateEscortImage(index: number, image: File | null) {
-    setEscorts((list) => list.map((e, i) => (i === index ? { ...e, image } : e)));
+  function updateEscortImage(index: number, file: File | null) {
+    const error = file ? fileSizeError(file, IMAGE_MAX_BYTES) : null;
+    setEscorts((list) =>
+      list.map((e, i) =>
+        i === index ? { ...e, image: error ? null : file, imageError: error } : e
+      )
+    );
   }
 
   function addDiagnosis() {
@@ -575,20 +602,29 @@ export function StudentCreateWizard() {
                 id="birthCertificate"
                 type="file"
                 accept="image/jpeg,image/png,image/webp,application/pdf"
-                onChange={(e) => setBirthCertificate(e.target.files?.[0] ?? null)}
+                aria-invalid={birthCertificateError ? true : undefined}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  handleBirthCertificateChange(file);
+                  if (file && fileSizeError(file, BIRTH_CERT_MAX_BYTES)) e.target.value = "";
+                }}
               />
               {/* Read from state, not the native input — its display resets
                   when this step unmounts/remounts on navigation. */}
-              <p className="text-xs text-muted-foreground">
-                {birthCertificate
-                  ? `Selected: ${birthCertificate.name}`
-                  : "No file selected. JPEG, PNG, WEBP, or PDF, up to 10MB."}
-              </p>
+              {birthCertificateError ? (
+                <p className="text-xs text-destructive">{birthCertificateError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {birthCertificate
+                    ? `Selected: ${birthCertificate.name}`
+                    : "No file selected. JPEG, PNG, WEBP, or PDF, up to 10MB."}
+                </p>
+              )}
             </div>
             <div className="flex flex-col gap-2">
               <Label>Student photo (optional)</Label>
               <div className="flex items-center gap-3">
-                <CameraCapture onCapture={setStudentPhoto} />
+                <CameraCapture onCapture={handleStudentPhotoChange} />
                 {photoPreviewUrl && (
                   // Blob object URL — next/image adds nothing here.
                   // eslint-disable-next-line @next/next/no-img-element
@@ -603,13 +639,22 @@ export function StudentCreateWizard() {
                 id="studentPhotoFile"
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
-                onChange={(e) => setStudentPhoto(e.target.files?.[0] ?? null)}
+                aria-invalid={studentPhotoError ? true : undefined}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  handleStudentPhotoChange(file);
+                  if (file && fileSizeError(file, IMAGE_MAX_BYTES)) e.target.value = "";
+                }}
               />
-              <p className="text-xs text-muted-foreground">
-                {studentPhoto
-                  ? `Selected: ${studentPhoto.name}`
-                  : "Take a photo with the camera, or choose an image file instead."}
-              </p>
+              {studentPhotoError ? (
+                <p className="text-xs text-destructive">{studentPhotoError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {studentPhoto
+                    ? `Selected: ${studentPhoto.name}`
+                    : "Take a photo with the camera, or choose an image file instead. JPEG, PNG, or WEBP, up to 5MB."}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -662,14 +707,23 @@ export function StudentCreateWizard() {
                       id={`escort-image-${i}`}
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
-                      onChange={(e) => updateEscortImage(i, e.target.files?.[0] ?? null)}
+                      aria-invalid={escort.imageError ? true : undefined}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        updateEscortImage(i, file);
+                        if (file && fileSizeError(file, IMAGE_MAX_BYTES)) e.target.value = "";
+                      }}
                     />
                     {/* Sourced from state, not the native input's own display —
                         the native file input can't show a remembered filename
                         after this JSX unmounts/remounts on step navigation. */}
-                    <p className="text-xs text-muted-foreground">
-                      {escort.image ? `Selected: ${escort.image.name}` : "No file selected"}
-                    </p>
+                    {escort.imageError ? (
+                      <p className="text-xs text-destructive">{escort.imageError}</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {escort.image ? `Selected: ${escort.image.name}` : "No file selected"}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

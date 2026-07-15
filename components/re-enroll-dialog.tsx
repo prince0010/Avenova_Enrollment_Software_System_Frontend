@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
 import type { Enrollment, Gender, Student, StudentUpdateInput } from "@/lib/types";
+import { BIRTH_CERT_MAX_BYTES, IMAGE_MAX_BYTES, fileSizeError } from "@/lib/upload-limits";
 import {
   createEnrollmentForStudent,
   updateStudent,
@@ -131,6 +132,7 @@ interface EscortEntry {
   phoneNumber: string;
   hasIdImage: boolean;
   newImage: File | null;
+  newImageError: string | null;
 }
 
 interface DiagnosisEntry {
@@ -221,6 +223,7 @@ function ReEnrollForm({
       phoneNumber: e.phoneNumber ?? "",
       hasIdImage: e.hasIdImage,
       newImage: null,
+      newImageError: null,
     }))
   );
   const [diagnoses, setDiagnoses] = useState<DiagnosisEntry[]>(() =>
@@ -239,7 +242,30 @@ function ReEnrollForm({
   const [customAllergy, setCustomAllergy] = useState("");
 
   const [studentPhoto, setStudentPhoto] = useState<File | null>(null);
+  const [studentPhotoError, setStudentPhotoError] = useState<string | null>(null);
   const [birthCertificate, setBirthCertificate] = useState<File | null>(null);
+  const [birthCertificateError, setBirthCertificateError] = useState<string | null>(null);
+
+  function handleStudentPhotoChange(file: File | null) {
+    const error = file ? fileSizeError(file, IMAGE_MAX_BYTES) : null;
+    setStudentPhotoError(error);
+    setStudentPhoto(error ? null : file);
+  }
+
+  function handleBirthCertificateChange(file: File | null) {
+    const error = file ? fileSizeError(file, BIRTH_CERT_MAX_BYTES) : null;
+    setBirthCertificateError(error);
+    setBirthCertificate(error ? null : file);
+  }
+
+  function updateEscortNewImage(index: number, file: File | null) {
+    const error = file ? fileSizeError(file, IMAGE_MAX_BYTES) : null;
+    setEscorts((list) =>
+      list.map((x, idx) =>
+        idx === index ? { ...x, newImage: error ? null : file, newImageError: error } : x
+      )
+    );
+  }
   const [schoolYear, setSchoolYear] = useState("");
   const [consents, setConsents] = useState<Record<ConsentKey, boolean>>({
     emergencyMedicalConsent: false,
@@ -497,7 +523,7 @@ function ReEnrollForm({
               <div className="flex flex-col gap-2">
                 <Label>New student photo</Label>
                 <div className="flex items-center gap-3">
-                  <CameraCapture onCapture={setStudentPhoto} />
+                  <CameraCapture onCapture={handleStudentPhotoChange} />
                   {photoPreviewUrl && (
                     // Blob object URL — next/image adds nothing here.
                     // eslint-disable-next-line @next/next/no-img-element
@@ -512,15 +538,25 @@ function ReEnrollForm({
                   id="re-enroll-photo"
                   type="file"
                   accept="image/jpeg,image/png,image/webp"
-                  onChange={(e) => setStudentPhoto(e.target.files?.[0] ?? null)}
+                  aria-invalid={studentPhotoError ? true : undefined}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    handleStudentPhotoChange(file);
+                    if (file && fileSizeError(file, IMAGE_MAX_BYTES)) e.target.value = "";
+                  }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  {studentPhoto
-                    ? `Selected: ${studentPhoto.name}`
-                    : student.hasPhoto
-                      ? "A photo is on file — leave empty to keep it."
-                      : "No photo on file yet."}
-                </p>
+                {studentPhotoError ? (
+                  <p className="text-xs text-destructive">{studentPhotoError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {studentPhoto
+                      ? `Selected: ${studentPhoto.name}`
+                      : student.hasPhoto
+                        ? "A photo is on file — leave empty to keep it."
+                        : "No photo on file yet."}{" "}
+                    JPEG, PNG, or WEBP, up to 5MB.
+                  </p>
+                )}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="re-enroll-birth-cert">New birth certificate</Label>
@@ -528,15 +564,25 @@ function ReEnrollForm({
                   id="re-enroll-birth-cert"
                   type="file"
                   accept="image/jpeg,image/png,image/webp,application/pdf"
-                  onChange={(e) => setBirthCertificate(e.target.files?.[0] ?? null)}
+                  aria-invalid={birthCertificateError ? true : undefined}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    handleBirthCertificateChange(file);
+                    if (file && fileSizeError(file, BIRTH_CERT_MAX_BYTES)) e.target.value = "";
+                  }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  {birthCertificate
-                    ? `Selected: ${birthCertificate.name}`
-                    : student.hasBirthCertificate
-                      ? "A birth certificate is on file — leave empty to keep it."
-                      : "No birth certificate on file yet."}
-                </p>
+                {birthCertificateError ? (
+                  <p className="text-xs text-destructive">{birthCertificateError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {birthCertificate
+                      ? `Selected: ${birthCertificate.name}`
+                      : student.hasBirthCertificate
+                        ? "A birth certificate is on file — leave empty to keep it."
+                        : "No birth certificate on file yet."}{" "}
+                    JPEG, PNG, WEBP, or PDF, up to 10MB.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -622,21 +668,25 @@ function ReEnrollForm({
                       id={`re-escort-image-${i}`}
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
-                      onChange={(e) =>
-                        setEscorts((list) =>
-                          list.map((x, idx) =>
-                            idx === i ? { ...x, newImage: e.target.files?.[0] ?? null } : x
-                          )
-                        )
-                      }
+                      aria-invalid={escort.newImageError ? true : undefined}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        updateEscortNewImage(i, file);
+                        if (file && fileSizeError(file, IMAGE_MAX_BYTES)) e.target.value = "";
+                      }}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      {escort.newImage
-                        ? `Selected: ${escort.newImage.name}`
-                        : escort.hasIdImage
-                          ? "An ID image is on file — leave empty to keep it."
-                          : "No ID image yet."}
-                    </p>
+                    {escort.newImageError ? (
+                      <p className="text-xs text-destructive">{escort.newImageError}</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {escort.newImage
+                          ? `Selected: ${escort.newImage.name}`
+                          : escort.hasIdImage
+                            ? "An ID image is on file — leave empty to keep it."
+                            : "No ID image yet."}{" "}
+                        JPEG, PNG, or WEBP, up to 5MB.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -649,7 +699,14 @@ function ReEnrollForm({
                 onClick={() =>
                   setEscorts((list) => [
                     ...list,
-                    { id: null, name: "", phoneNumber: "", hasIdImage: false, newImage: null },
+                    {
+                      id: null,
+                      name: "",
+                      phoneNumber: "",
+                      hasIdImage: false,
+                      newImage: null,
+                      newImageError: null,
+                    },
                   ])
                 }
               >
@@ -865,7 +922,7 @@ function ReEnrollForm({
 
         {stepId === "review" && (
           <div className="flex flex-col gap-4 text-sm">
-            <dl className="grid grid-cols-[minmax(10rem,auto)_1fr] gap-x-4 gap-y-1">
+            <dl className="grid grid-cols-[minmax(10rem,auto)_minmax(0,1fr)] gap-x-4 gap-y-1">
               <ReviewRow label="Name" value={composedName || null} />
               <ReviewRow label="Date of birth" value={dateOfBirth} />
               <ReviewRow label="Gender" value={gender === "MALE" ? "Male" : "Female"} />
@@ -940,7 +997,9 @@ export function ReEnrollDialog({
   onEnrolled: (enrollment: Enrollment, updatedStudent: Student | null) => void;
 }) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // disablePointerDismissal: this is a long multi-step review form — an
+    // accidental click outside (or on the backdrop) shouldn't discard it.
+    <Dialog open={open} onOpenChange={onOpenChange} disablePointerDismissal>
       {/* Fixed height: the step area scrolls internally instead of the
           dialog growing/shrinking per step. */}
       <DialogContent className="flex h-[85vh] flex-col sm:max-w-3xl">

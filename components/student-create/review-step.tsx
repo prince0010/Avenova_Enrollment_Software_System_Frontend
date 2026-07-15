@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { TruncatedText } from "@/components/truncated-text";
 import { EscortDetailDialog } from "@/components/escort-detail-dialog";
 import { DocumentPreviewDialog } from "@/components/document-preview-dialog";
 
@@ -22,11 +23,11 @@ function Section({
       <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-foreground">
         {title}
       </h3>
-      <dl className="grid grid-cols-[minmax(10rem,auto)_1fr] gap-x-4 gap-y-1 text-sm">
+      <dl className="grid grid-cols-[minmax(10rem,auto)_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         {visible.map(([label, value]) => (
           <div key={label} className="contents">
             <dt className="text-muted-foreground">{label}</dt>
-            <dd className="whitespace-pre-wrap">{value}</dd>
+            <dd>{typeof value === "string" ? <TruncatedText text={value} /> : value}</dd>
           </div>
         ))}
       </dl>
@@ -36,6 +37,16 @@ function Section({
 
 function yesNo(v: boolean) {
   return v ? "Yes" : "No";
+}
+
+// A freshly-selected File's `.type` is usually reliable, but some
+// browser/OS combinations report it as an empty string for a PDF (no
+// registered MIME association) — falling back to the filename extension
+// keeps this correct even then. The post-creation previews (student-view /
+// enrollment-snapshot dialogs) instead trust the server's Content-Type,
+// which doesn't have this gap.
+function isPdfFile(file: File): boolean {
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 }
 
 const linkClass =
@@ -233,7 +244,7 @@ export function ReviewStep({
             ? {
                 status: "ready",
                 url: certUrl,
-                isPdf: birthCertificate.type === "application/pdf",
+                isPdf: isPdfFile(birthCertificate),
               }
             : { status: "error", message: "No file selected." }
         }
