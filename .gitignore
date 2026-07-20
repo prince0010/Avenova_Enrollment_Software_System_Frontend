@@ -19,6 +19,10 @@
 
 # production
 /build
+!/build/icon.ico
+
+# electron-builder output (installer, unpacked app — see "Packaging" in CLAUDE.md)
+/release
 
 # misc
 .DS_Store

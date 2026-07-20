@@ -38,10 +38,24 @@ There is no registration/signup page — the backend has no public self-registra
 
 ## Electron shell
 
-- `electron/main.js` — the whole main process: one `BrowserWindow` (1280×800, `contextIsolation: true`, `nodeIntegration: false`) that loads `ELECTRON_START_URL` (default `http://localhost:3000`). `package.json` has `"main": "electron/main.js"` so `electron .` works.
+- `electron/main.js` — the whole main process: one `BrowserWindow` (1280×800, `contextIsolation: true`, `nodeIntegration: false`) that loads `ELECTRON_START_URL` (default `http://localhost:3000`) in dev. `package.json` has `"main": "electron/main.js"` so `electron .` works.
 - `electron/preload.js` — intentionally empty; the renderer is the Next.js app and needs no Node/Electron APIs yet. Add `contextBridge.exposeInMainWorld` calls there if a future feature needs native access.
 - The shell is deliberately thin: all auth/routing/UI logic lives in the Next.js app, so everything keeps working identically in a plain browser. Cookies (the httpOnly refresh token) work the same in Electron's Chromium as in a browser — no auth changes were needed.
-- **Packaging/distribution is not set up yet** — no electron-builder/forge config, no production story (a packaged app would need `next start` or a bundled server running locally, or a remotely hosted frontend to point at). Current setup is dev-only: `npm run electron:dev`.
+
+## Packaging (Windows `.exe`)
+
+`npm run electron:build` (`next build && electron-builder --win nsis`) produces a real installer at `frontend/release/Avenova Enrollment System Setup <version>.exe` (NSIS, `oneClick: false` so it shows the install-location picker + a desktop shortcut option). Built and verified end-to-end (installer launches, logs in against the real backend, dashboard loads).
+
+- **Static export, not a bundled Node server.** `next.config.ts` has `output: "export"` + `images.unoptimized: true` — `next build` writes plain HTML/CSS/JS to `out/` instead of a server build. This works because every page here is already client-rendered and talks to the backend over HTTP (no route handlers, no `"use server"`, no dynamic `[id]` routes, no `middleware.ts` — confirmed absent before choosing this over bundling a Next server binary). Simpler and more robust than shipping `next start` inside Electron. **This means `npm run start` (`next start`) no longer works** now that the build is export-only — it was never part of the Electron path, but if plain-browser production hosting is needed again, serve `out/` directly (e.g. `npx serve out`) instead.
+- **`electron/main.js` runs a tiny bundled static server in packaged mode** (`app.isPackaged`), not `loadFile`/`file://` — `out/`'s pages reference absolute `/_next/...` paths, which break under `file://` and hit Chromium's CORS restrictions on that protocol. `startStaticServer()` spins up a local-only `http` server backed by `serve-handler`, serving `out/` (shipped as an `extraResources` entry, so it lands in `resources/out` outside the asar — read via `process.resourcesPath`, not `__dirname`).
+- **Fixed port (`PACKAGED_APP_PORT = 51247` in `main.js`), not OS-assigned** — the backend's `CORS_ORIGIN` is a single exact-match string (see `backend/CLAUDE.md`), so the packaged app needs one stable, known origin to allow. Set the backend's `.env` `CORS_ORIGIN=http://localhost:51247` to test the packaged build; swap back to `http://localhost:3000` for `electron:dev`/`next dev` afterward (same single-origin gotcha as "How to run it" above — restart the backend after changing it).
+- **Navigates to `http://localhost:51247`, never `http://127.0.0.1:51247`**, even though the static server's socket binds to `127.0.0.1` — the backend's refresh-token cookie is `Domain=localhost` (`COOKIE_DOMAIN` env), which won't round-trip against a bare IP origin (same gotcha as the "Gotchas" section below, now applies to the packaged app too). Verified live: a real prior dev-mode login's cookie (`Domain=localhost` ignores port) round-tripped successfully into the freshly packaged app, confirming both the CORS origin and cookie domain line up.
+- **`app.requestSingleInstanceLock()`** — without it, launching the packaged app twice would race two processes for the same fixed port instead of just focusing the existing window.
+- **Icon**: `build/icon.ico`, generated once from `public/images/Avenova_logo.png` via `png-to-ico` (`png-to-ico`'s CJS export is under `.default`, not the module root — see the one-off generation command in git history if regenerating after a logo change). Referenced via `build.win.icon` in `package.json`; the `BrowserWindow`'s own runtime/taskbar icon (`electron/main.js`) still just uses the source `.png` directly, which Electron accepts fine cross-platform.
+- **electron-builder config lives in `package.json`'s `"build"` key** (not a separate `electron-builder.yml`) — `appId: com.avenova.enrollment-system`, `productName: "Avenova Enrollment System"`, output to `release/`, `out/` shipped via `extraResources` as noted above.
+- **Known gotcha**: the packaged app's Electron `userData` folder (hence its cookie/session storage) is named `frontend` — Electron derives it from package.json's `"name"` field, not `"productName"`, and nothing in `main.js` calls `app.setName()` to override it. This means the packaged app and `npm run electron:dev` currently **share the same persistent login session** on a given machine. Harmless for single-developer use; call `app.setName("Avenova Enrollment System")` before `app.whenReady()` if dev/packaged sessions ever need to be isolated.
+- **Not signed** — `electron-builder`'s NSIS step invokes `signtool.exe` but there's no code-signing certificate configured, so Windows SmartScreen will likely flag the installer as from an "unknown publisher" until one is added.
+- **Not built yet**: auto-update, a portable (installer-less) build variant, macOS/Linux targets, CI-driven builds — this was packaged and verified locally only.
 
 ## Auth model as implemented here
 
@@ -79,5 +93,5 @@ There is no registration/signup page — the backend has no public self-registra
 - Any STAFF/ADMIN-specific views or role-based UI differences.
 - Forgot-password / account-recovery flow.
 - Automated tests.
-- Electron packaging/distribution (electron-builder/forge, installers, auto-update) — dev-only shell so far.
+- Auto-update, a portable (installer-less) `.exe` variant, macOS/Linux packaging, code-signing, CI-driven builds — see "Packaging (Windows `.exe`)" above for what does exist.
 - Dark mode toggle (chart colors are dark-ready via the `.dark` class, but nothing sets that class yet).

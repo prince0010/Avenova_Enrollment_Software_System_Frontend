@@ -372,10 +372,11 @@ export function StudentCreateWizard() {
       setCreatedStudent(student);
 
       const failures: string[] = [];
+      const schoolYear = values.schoolYear as string;
 
       if (birthCertificate) {
         try {
-          await uploadBirthCertificate(student.id, birthCertificate);
+          await uploadBirthCertificate(student.id, birthCertificate, schoolYear);
         } catch (err) {
           failures.push(
             `Birth certificate: ${err instanceof ApiClientError ? err.message : "upload failed"}`
@@ -385,7 +386,7 @@ export function StudentCreateWizard() {
 
       if (studentPhoto) {
         try {
-          await uploadStudentPhoto(student.id, studentPhoto);
+          await uploadStudentPhoto(student.id, studentPhoto, schoolYear);
         } catch (err) {
           failures.push(
             `Student photo: ${err instanceof ApiClientError ? err.message : "upload failed"}`
@@ -398,7 +399,7 @@ export function StudentCreateWizard() {
         const createdEscort = student.escorts[i];
         if (!image || !createdEscort) continue;
         try {
-          await uploadEscortIdImage(student.id, createdEscort.id, image);
+          await uploadEscortIdImage(student.id, createdEscort.id, image, schoolYear);
         } catch (err) {
           failures.push(
             `${createdEscort.name}: ${

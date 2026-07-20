@@ -390,7 +390,7 @@ function ReEnrollForm({
           }
           if (entry.newImage) {
             updatedStudent = (
-              await uploadEscortIdImage(student.id, entry.id, entry.newImage)
+              await uploadEscortIdImage(student.id, entry.id, entry.newImage, schoolYear)
             ).student;
           }
         } else {
@@ -403,7 +403,7 @@ function ReEnrollForm({
           const created = res.student.escorts[res.student.escorts.length - 1];
           if (entry.newImage && created) {
             updatedStudent = (
-              await uploadEscortIdImage(student.id, created.id, entry.newImage)
+              await uploadEscortIdImage(student.id, created.id, entry.newImage, schoolYear)
             ).student;
           }
         }
@@ -441,10 +441,12 @@ function ReEnrollForm({
 
       // 4. Replacement documents (old files are kept for past snapshots).
       if (studentPhoto) {
-        updatedStudent = (await uploadStudentPhoto(student.id, studentPhoto)).student;
+        updatedStudent = (await uploadStudentPhoto(student.id, studentPhoto, schoolYear)).student;
       }
       if (birthCertificate) {
-        updatedStudent = (await uploadBirthCertificate(student.id, birthCertificate)).student;
+        updatedStudent = (
+          await uploadBirthCertificate(student.id, birthCertificate, schoolYear)
+        ).student;
       }
 
       // 5. The new enrollment period — snapshots fees + student data.

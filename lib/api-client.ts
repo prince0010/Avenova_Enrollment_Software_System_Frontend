@@ -182,8 +182,19 @@ export async function createStudent(data: StudentCreateInput) {
   });
 }
 
-export async function uploadEscortIdImage(studentId: string, escortId: string, file: File) {
+// `schoolYear` (when the caller has one in hand — the wizard/re-enroll
+// dialog always do) tells the backend which per-student year folder to file
+// the upload under; appended BEFORE the file field, since multer parses
+// multipart fields in order and needs it already read by the time it picks
+// the file's destination.
+export async function uploadEscortIdImage(
+  studentId: string,
+  escortId: string,
+  file: File,
+  schoolYear?: string
+) {
   const formData = new FormData();
+  if (schoolYear) formData.append("schoolYear", schoolYear);
   formData.append("image", file);
   return apiFetchJson<{ student: Student }>(
     `/students/${studentId}/escorts/${escortId}/id-image`,
@@ -194,8 +205,9 @@ export async function uploadEscortIdImage(studentId: string, escortId: string, f
   );
 }
 
-export async function uploadBirthCertificate(studentId: string, file: File) {
+export async function uploadBirthCertificate(studentId: string, file: File, schoolYear?: string) {
   const formData = new FormData();
+  if (schoolYear) formData.append("schoolYear", schoolYear);
   formData.append("file", file);
   return apiFetchJson<{ student: Student }>(`/students/${studentId}/birth-certificate`, {
     method: "POST",
@@ -203,8 +215,9 @@ export async function uploadBirthCertificate(studentId: string, file: File) {
   });
 }
 
-export async function uploadStudentPhoto(studentId: string, file: File) {
+export async function uploadStudentPhoto(studentId: string, file: File, schoolYear?: string) {
   const formData = new FormData();
+  if (schoolYear) formData.append("schoolYear", schoolYear);
   formData.append("image", file);
   return apiFetchJson<{ student: Student }>(`/students/${studentId}/photo`, {
     method: "POST",
