@@ -8,6 +8,15 @@ import { formatPeso } from "./format";
 
 const SCHOOL_NAME = "Avenova Early Intervention and SPED Learning Center";
 
+// Both the Statement of Account's "Prepared by" and the Official Receipt's
+// "Authorized Representative" lines show the logged-in staff/admin's name
+// alongside this fixed second signatory, per product decision.
+const SECOND_AUTHORIZED_SIGNATORY = "Ellevera, Chrislly Anne Lou";
+
+function withSecondSignatory(name: string): string {
+  return name ? `${name} / ${SECOND_AUTHORIZED_SIGNATORY}` : SECOND_AUTHORIZED_SIGNATORY;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -188,7 +197,7 @@ export function buildStatementOfAccountHtml(
     </p>
     <div class="signatures">
       <div class="signature">
-        <div class="sig-name">${escapeHtml(preparedBy)}</div>
+        <div class="sig-name">${escapeHtml(withSecondSignatory(preparedBy))}</div>
         <div class="line">Prepared by</div>
       </div>
       <div class="signature"><div class="line">Received by (Parent / Guardian)</div></div>
@@ -233,7 +242,7 @@ export function buildOfficialReceiptHtml(student: Student, details: ReceiptDetai
     </p>
     <div class="signatures" style="justify-content: flex-end">
       <div class="signature" style="flex: 0 0 260px">
-        <div class="sig-name">${escapeHtml(details.receivedBy)}</div>
+        <div class="sig-name">${escapeHtml(withSecondSignatory(details.receivedBy))}</div>
         <div class="line">Authorized Representative</div>
       </div>
     </div>
