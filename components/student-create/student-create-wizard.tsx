@@ -7,13 +7,15 @@ import {
   createStudent,
   listStudents,
   listArchivedStudents,
+  listFeePackages,
   uploadEscortIdImage,
   uploadBirthCertificate,
   uploadStudentPhoto,
   ApiClientError,
 } from "@/lib/api-client";
-import type { StudentCreateInput, Student } from "@/lib/types";
+import type { FeePackage, StudentCreateInput, Student } from "@/lib/types";
 import { BIRTH_CERT_MAX_BYTES, IMAGE_MAX_BYTES, fileSizeError } from "@/lib/upload-limits";
+import { formatPeso } from "@/lib/format";
 import {
   Card,
   CardContent,
@@ -34,6 +36,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { StudentViewDialog } from "@/components/student-view-dialog";
 import { Stepper } from "./stepper";
 import { StepFields } from "./step-fields";
@@ -90,7 +99,9 @@ function buildPayload(
   values: Record<string, string | boolean>,
   escorts: EscortEntry[],
   diagnoses: DiagnosisEntry[],
-  allergies: string[]
+  allergies: string[],
+  feePackageId: string,
+  additionalFeePackageIds: string[]
 ): StudentCreateInput {
   const emergencyContactName = (values.emergencyContactName as string).trim();
   const emergencyContactNumber = (values.emergencyContact as string).trim();
@@ -112,6 +123,10 @@ function buildPayload(
       dateOfDiagnosis: d.dateOfDiagnosis || undefined,
     })),
     schoolYear: (values.schoolYear as string).trim(),
+    // Omitted entirely when unset so the backend falls back to its default
+    // package rather than receiving an empty string.
+    ...(feePackageId ? { feePackageId } : {}),
+    ...(additionalFeePackageIds.length > 0 ? { additionalFeePackageIds } : {}),
     emergencyMedicalConsent: Boolean(values.emergencyMedicalConsent),
     therapyAssessmentConsent: Boolean(values.therapyAssessmentConsent),
     policyAcknowledgement: Boolean(values.policyAcknowledgement),
@@ -144,6 +159,66 @@ export function StudentCreateWizard() {
   const [birthCertificateError, setBirthCertificateError] = useState<string | null>(null);
   const [studentPhoto, setStudentPhoto] = useState<File | null>(null);
   const [studentPhotoError, setStudentPhotoError] = useState<string | null>(null);
+
+  // Which fee package this student's first enrollment period is billed under.
+  const [feePackages, setFeePackages] = useState<FeePackage[]>([]);
+  const [feePackageId, setFeePackageId] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    listFeePackages()
+      .then((res) => {
+        if (cancelled) return;
+        setFeePackages(res.feePackages);
+        // Preselect the default so the dropdown never starts blank and the
+        // submitted value matches what the backend would have picked anyway.
+        setFeePackageId((cur) => cur || res.feePackages.find((p) => p.isDefault)?.id || "");
+      })
+      .catch(() => {
+        if (!cancelled) setFeePackages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const feePackageItems = useMemo(
+    () => feePackages.map((p) => ({ value: p.id, label: p.name })),
+    [feePackages]
+  );
+  const selectedFeePackage = feePackages.find((p) => p.id === feePackageId) ?? null;
+
+  // Extra packages picked alongside the primary one — their fees land as
+  // ADHOC lines onto the same enrollment, same effect as using Edit Fees'
+  // "Add a whole package" right after creating the student, just done in the
+  // same submit. `pendingAdditionalId` is the dropdown's current pick, before
+  // "Add" moves it into the accumulated list.
+  const [additionalPackageIds, setAdditionalPackageIds] = useState<string[]>([]);
+  const [pendingAdditionalId, setPendingAdditionalId] = useState("");
+  const additionalPackages = additionalPackageIds
+    .map((id) => feePackages.find((p) => p.id === id))
+    .filter((p): p is FeePackage => p != null);
+  // Can't add the primary package again (redundant — it's already applied),
+  // and can't add one that's already in the list.
+  const additionalPackageItems = useMemo(
+    () =>
+      feePackages
+        .filter((p) => p.id !== feePackageId && !additionalPackageIds.includes(p.id))
+        .map((p) => ({ value: p.id, label: p.name })),
+    [feePackages, feePackageId, additionalPackageIds]
+  );
+  function addAdditionalPackage() {
+    if (!pendingAdditionalId) return;
+    setAdditionalPackageIds((ids) => [...ids, pendingAdditionalId]);
+    setPendingAdditionalId("");
+  }
+  function removeAdditionalPackage(id: string) {
+    setAdditionalPackageIds((ids) => ids.filter((x) => x !== id));
+  }
+  // Dropping the primary package must also drop it from "extra" list if it
+  // was somehow already added there (e.g. it was default when added, then the
+  // primary selection changed to match it).
+  useEffect(() => {
+    setAdditionalPackageIds((ids) => ids.filter((id) => id !== feePackageId));
+  }, [feePackageId]);
 
   function handleBirthCertificateChange(file: File | null) {
     const error = file ? fileSizeError(file, BIRTH_CERT_MAX_BYTES) : null;
@@ -368,7 +443,9 @@ export function StudentCreateWizard() {
     setSubmitError(null);
     setIsSubmitting(true);
     try {
-      const { student } = await createStudent(buildPayload(values, escorts, diagnoses, allergies));
+      const { student } = await createStudent(
+        buildPayload(values, escorts, diagnoses, allergies, feePackageId, additionalPackageIds)
+      );
       setCreatedStudent(student);
 
       const failures: string[] = [];
@@ -595,6 +672,147 @@ export function StudentCreateWizard() {
           />
         )}
 
+        {currentStepId === "enrollment" && (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="feePackage">Fee package</Label>
+            <Select
+              items={feePackageItems}
+              value={feePackageId}
+              onValueChange={(v) => v && setFeePackageId(v)}
+            >
+              <SelectTrigger id="feePackage">
+                <SelectValue placeholder="Select a fee package" />
+              </SelectTrigger>
+              <SelectContent>
+                {feePackages.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                    {p.isDefault ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              These amounts freeze onto this school year at confirmation — later catalog changes
+              won&apos;t alter them.
+            </p>
+            {selectedFeePackage && selectedFeePackage.fees.length > 0 && (
+              <div className="mt-1 flex flex-col gap-0.5 rounded-lg border p-3 text-xs">
+                {selectedFeePackage.fees.map((f) => (
+                  <div key={f.id} className="flex justify-between text-muted-foreground">
+                    <span>{f.name}</span>
+                    <span className="tabular-nums">{formatPeso(f.amount)}</span>
+                  </div>
+                ))}
+                <div className="mt-1 flex justify-between border-t pt-1 font-medium">
+                  <span>Total</span>
+                  <span className="tabular-nums">
+                    {formatPeso(
+                      selectedFeePackage.fees.reduce((sum, f) => sum + Number(f.amount), 0)
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
+            {selectedFeePackage && selectedFeePackage.fees.length === 0 && (
+              <p className="text-xs text-destructive">
+                This package has no fees — the student would be charged nothing.
+              </p>
+            )}
+
+            {/* Extra packages on top of the primary one — same interaction as
+                Edit Fees' "Add a whole package": pick, click Add, get a
+                removable chip. Their fees land as ADHOC lines on the same
+                enrollment once it's created (or confirmed, for a STAFF
+                submission). Most students only need the one package above, so
+                this stays a secondary, optional control below it. */}
+            <div className="mt-2 flex flex-col gap-2 rounded-lg border p-3">
+              <Label htmlFor="additionalFeePackage">Additional packages (optional)</Label>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <Select
+                    items={additionalPackageItems}
+                    value={pendingAdditionalId}
+                    onValueChange={(v) => v != null && setPendingAdditionalId(v)}
+                  >
+                    <SelectTrigger id="additionalFeePackage">
+                      <SelectValue placeholder="Select a package" />
+                    </SelectTrigger>
+                    <SelectContent className="w-max max-w-[90vw]">
+                      {feePackages
+                        .filter(
+                          (p) => p.id !== feePackageId && !additionalPackageIds.includes(p.id)
+                        )
+                        .map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addAdditionalPackage}
+                  disabled={!pendingAdditionalId}
+                >
+                  <Plus /> Add
+                </Button>
+              </div>
+              {additionalPackages.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  {additionalPackages.map((p) => {
+                    const subtotal = p.fees.reduce((sum, f) => sum + Number(f.amount), 0);
+                    return (
+                      <div key={p.id} className="rounded-lg border p-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{p.name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="tabular-nums text-muted-foreground">
+                              {formatPeso(subtotal)}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              className="cursor-pointer"
+                              aria-label={`Remove ${p.name}`}
+                              onClick={() => removeAdditionalPackage(p.id)}
+                            >
+                              <X />
+                            </Button>
+                          </div>
+                        </div>
+                        {p.fees.length > 0 && (
+                          <div className="mt-1.5 flex flex-col gap-0.5 border-t pt-1.5">
+                            {p.fees.map((f) => (
+                              <div key={f.id} className="flex justify-between text-muted-foreground">
+                                <span>{f.name}</span>
+                                <span className="tabular-nums">{formatPeso(f.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {p.fees.length === 0 && (
+                          <p className="mt-1.5 border-t pt-1.5 text-destructive">
+                            This package has no fees.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <p className="text-xs text-muted-foreground">
+                    These fees are added on top of {selectedFeePackage?.name ?? "the primary package"}{" "}
+                    as separate charges — they won&apos;t track later price changes to their own
+                    catalog items, same as adding them by hand afterward would.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {currentStepId === "student" && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
@@ -750,6 +968,8 @@ export function StudentCreateWizard() {
             birthCertificate={birthCertificate}
             studentPhoto={studentPhoto}
             photoPreviewUrl={photoPreviewUrl}
+            feePackageName={selectedFeePackage?.name ?? null}
+            additionalPackageNames={additionalPackages.map((p) => p.name)}
           />
         )}
 

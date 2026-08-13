@@ -11,12 +11,19 @@ import {
   emailStatementOfAccount,
   ApiClientError,
 } from "@/lib/api-client";
-import type { Enrollment, Student, StudentEnrollment } from "@/lib/types";
+import type {
+  Enrollment,
+  EnrollmentFeeSummary,
+  Student,
+  StudentEnrollment,
+} from "@/lib/types";
 import { StudentViewDialog } from "@/components/student-view-dialog";
 import { StudentEditDialog } from "@/components/student-edit-dialog";
 import { OfficialReceiptDialog } from "@/components/official-receipt-dialog";
 import { ReEnrollDialog } from "@/components/re-enroll-dialog";
+import { EnrollmentChargesDialog } from "@/components/enrollment-charges-dialog";
 import { buildStatementOfAccountHtml, openPrintWindow } from "@/lib/print-documents";
+import { groupEnrollmentFees } from "@/lib/fee-groups";
 import { useAuth } from "@/lib/auth-context";
 import { EnrolledCell } from "@/components/enrolled-cell";
 import { TablePagination } from "@/components/table-pagination";
@@ -61,6 +68,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+// What the statement picker's year Select needs — a structural subset shared
+// by both StudentEnrollment (from listStudentEnrollments) and the thinner
+// LatestEnrollmentSummary already on hand, so the picker can fall back to the
+// cached latest period without a network round trip.
+type PickableEnrollment = Pick<
+  StudentEnrollment,
+  "id" | "schoolYear" | "fees" | "feePackageId" | "feePackageName"
+>;
+
+// "" (no filter) shows every package the student has fees under.
+const ALL_PACKAGES = "";
+
 function toLocalDateString(d: Date) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -89,11 +108,15 @@ function StudentsPageInner() {
   const [editing, setEditing] = useState<Student | null>(null);
   const [receiptFor, setReceiptFor] = useState<Student | null>(null);
   const [reEnrolling, setReEnrolling] = useState<Student | null>(null);
+  const [chargesFor, setChargesFor] = useState<Student | null>(null);
   const [statementPicker, setStatementPicker] = useState<{
     student: Student;
-    enrollments: StudentEnrollment[];
+    enrollments: PickableEnrollment[];
   } | null>(null);
   const [statementYearId, setStatementYearId] = useState<string>("");
+  // Which package to include in the printed/emailed statement — ALL_PACKAGES
+  // shows everything the selected school year was billed for ("Both").
+  const [statementPackageFilter, setStatementPackageFilter] = useState<string>(ALL_PACKAGES);
   // Transient status for the "Generate" button's email side effect — the
   // dialog closes immediately for printing, so this surfaces on the page
   // itself and clears on its own after a few seconds.
@@ -160,6 +183,57 @@ function StudentsPageInner() {
     );
   }
 
+  // Edit Fees works on the student's latest (confirmed) period — the same one
+  // Statement of Account and Official Receipt read from. Patching the row's
+  // snapshot in place keeps a statement printed straight afterwards correct.
+  function handleFeesChanged(enrollmentId: string, fees: EnrollmentFeeSummary[]) {
+    setStudents((list) =>
+      list
+        ? list.map((s) =>
+            s.latestEnrollment?.id === enrollmentId
+              ? { ...s, latestEnrollment: { ...s.latestEnrollment, fees } }
+              : s
+          )
+        : list
+    );
+    setChargesFor((cur) =>
+      cur && cur.latestEnrollment?.id === enrollmentId
+        ? { ...cur, latestEnrollment: { ...cur.latestEnrollment, fees } }
+        : cur
+    );
+  }
+
+  // Removing the current package clears more than just the fee list — the
+  // enrollment's own package assignment goes to null too, so the row (and the
+  // Charges dialog's own "Billed under X" line next time it opens) needs to
+  // reflect that it's no longer billed under anything.
+  function handlePackageUnassigned(enrollmentId: string) {
+    setStudents((list) =>
+      list
+        ? list.map((s) =>
+            s.latestEnrollment?.id === enrollmentId
+              ? {
+                  ...s,
+                  latestEnrollment: {
+                    ...s.latestEnrollment,
+                    feePackageId: null,
+                    feePackageName: null,
+                  },
+                }
+              : s
+          )
+        : list
+    );
+    setChargesFor((cur) =>
+      cur && cur.latestEnrollment?.id === enrollmentId
+        ? {
+            ...cur,
+            latestEnrollment: { ...cur.latestEnrollment, feePackageId: null, feePackageName: null },
+          }
+        : cur
+    );
+  }
+
   // A new period becomes the student's latest enrollment; any student-data
   // edits made in the re-enroll dialog land on the row at the same time.
   function handleReEnrolled(enrollment: Enrollment, updatedStudent: Student | null) {
@@ -176,6 +250,8 @@ function StudentsPageInner() {
                     createdAt: enrollment.createdAt,
                     status: enrollment.status,
                     fees: enrollment.fees,
+                    feePackageId: enrollment.feePackageId,
+                    feePackageName: enrollment.feePackageName,
                   },
                 }
               : s
@@ -184,25 +260,40 @@ function StudentsPageInner() {
     );
   }
 
-  function printStatement(
-    student: Student,
-    enrollment: { schoolYear: string; fees: { name: string; amount: string }[] }
-  ) {
+  // packageFilter is ALL_PACKAGES ("Both") or one package's label from
+  // groupEnrollmentFees — grouped into per-package sections when showing all,
+  // a single flat table when narrowed to one.
+  function printStatement(student: Student, enrollment: PickableEnrollment, packageFilter: string) {
+    const allGroups = groupEnrollmentFees(enrollment.fees, enrollment.feePackageName);
+    const groups = packageFilter
+      ? allGroups.filter((g) => g.label === packageFilter)
+      : allGroups;
+    const packageLabel =
+      packageFilter || (allGroups.length > 1 ? "All packages" : allGroups[0]?.label);
     openPrintWindow(
       `Statement of Account — ${student.studentName}`,
       buildStatementOfAccountHtml(
         student,
-        enrollment,
+        {
+          schoolYear: enrollment.schoolYear,
+          groups,
+          packageLabel,
+          isFiltered: Boolean(packageFilter),
+        },
         user ? `${user.firstName} ${user.lastName}` : ""
       )
     );
   }
 
-  // Fires alongside the print — the backend renders the same fee snapshot as
-  // an emailed backup copy for the parent's own records.
-  async function emailStatementCopy(enrollmentId: string) {
+  // Fires alongside the print — the backend renders the same (equally
+  // filtered) fee snapshot as an emailed backup copy for the parent's own
+  // records, so the print and the email always agree on what was shown.
+  async function emailStatementCopy(enrollmentId: string, packageFilter: string) {
     try {
-      const { message } = await emailStatementOfAccount(enrollmentId);
+      const { message } = await emailStatementOfAccount(
+        enrollmentId,
+        packageFilter || undefined
+      );
       setStatementEmailNotice({ type: "success", message });
     } catch (err) {
       setStatementEmailNotice({
@@ -216,22 +307,31 @@ function StudentsPageInner() {
   }
 
   // A statement covers one school year's frozen fee snapshot. The admin
-  // always picks the school year explicitly — even when there's only one —
-  // so what's being printed is never ambiguous.
+  // always picks the school year (and, if the student is on more than one
+  // package, which package) explicitly — even when there's only one of
+  // either — so what's being printed is never ambiguous.
   async function handleStatement(student: Student) {
+    setStatementPackageFilter(ALL_PACKAGES);
     try {
       const { enrollments } = await listStudentEnrollments(student.id);
       const confirmed = enrollments.filter((e) => e.status === "CONFIRMED");
-      if (confirmed.length > 0) {
-        // Newest year preselected; enrollments arrive newest-first.
-        setStatementYearId(confirmed[0].id);
-        setStatementPicker({ student, enrollments: confirmed });
-      } else if (student.latestEnrollment) {
-        printStatement(student, student.latestEnrollment);
+      const list: PickableEnrollment[] =
+        confirmed.length > 0
+          ? confirmed
+          : student.latestEnrollment
+            ? [student.latestEnrollment]
+            : [];
+      if (list.length > 0) {
+        // Newest year preselected; confirmed enrollments arrive newest-first.
+        setStatementYearId(list[0].id);
+        setStatementPicker({ student, enrollments: list });
       }
     } catch {
       // Network hiccup: fall back to the latest snapshot already on hand.
-      if (student.latestEnrollment) printStatement(student, student.latestEnrollment);
+      if (student.latestEnrollment) {
+        setStatementYearId(student.latestEnrollment.id);
+        setStatementPicker({ student, enrollments: [student.latestEnrollment] });
+      }
     }
   }
 
@@ -441,6 +541,12 @@ function StudentsPageInner() {
                               </DropdownMenuItem>
                               {s.latestEnrollment?.status === "CONFIRMED" && (
                                 <>
+                                  {/* Only a confirmed period has a frozen fee
+                                      snapshot to edit — same gate as the two
+                                      print actions below. */}
+                                  <DropdownMenuItem onClick={() => setChargesFor(s)}>
+                                    Edit Fees
+                                  </DropdownMenuItem>
                                   <DropdownMenuItem onClick={() => handleStatement(s)}>
                                     Statement of Account
                                   </DropdownMenuItem>
@@ -503,6 +609,23 @@ function StudentsPageInner() {
         onOpenChange={(open) => !open && setReEnrolling(null)}
         onEnrolled={handleReEnrolled}
       />
+      <EnrollmentChargesDialog
+        target={
+          chargesFor?.latestEnrollment
+            ? {
+                enrollmentId: chargesFor.latestEnrollment.id,
+                studentName: chargesFor.studentName,
+                schoolYear: chargesFor.latestEnrollment.schoolYear,
+                feePackageName: chargesFor.latestEnrollment.feePackageName,
+                fees: chargesFor.latestEnrollment.fees,
+              }
+            : null
+        }
+        open={chargesFor !== null}
+        onOpenChange={(open) => !open && setChargesFor(null)}
+        onFeesChanged={handleFeesChanged}
+        onPackageUnassigned={handlePackageUnassigned}
+      />
 
       <Dialog
         open={statementPicker !== null}
@@ -526,7 +649,13 @@ function StudentsPageInner() {
                 label: `School Year ${new Date(e.schoolYear).getFullYear()} — Enrolled ${new Date(e.schoolYear).toLocaleDateString()}`,
               }))}
               value={statementYearId}
-              onValueChange={(v) => v && setStatementYearId(v)}
+              onValueChange={(v) => {
+                if (!v) return;
+                setStatementYearId(v);
+                // Groups differ per school year, so a package chosen for a
+                // previous selection may no longer exist — reset to "Both".
+                setStatementPackageFilter(ALL_PACKAGES);
+              }}
             >
               <SelectTrigger id="statement-year">
                 <SelectValue />
@@ -541,6 +670,45 @@ function StudentsPageInner() {
               </SelectContent>
             </Select>
           </div>
+          {(() => {
+            const selected = statementPicker?.enrollments.find((e) => e.id === statementYearId);
+            const groups = selected
+              ? groupEnrollmentFees(selected.fees, selected.feePackageName)
+              : [];
+            // Only worth showing a picker when there's an actual choice — a
+            // student on one package has nothing to narrow down to.
+            if (groups.length <= 1) return null;
+            const packageItems = [
+              { value: ALL_PACKAGES, label: "Both (all packages)" },
+              ...groups.map((g) => ({ value: g.label, label: g.label })),
+            ];
+            return (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="statement-package">Fee package</Label>
+                <Select
+                  items={packageItems}
+                  value={statementPackageFilter}
+                  onValueChange={(v) => v != null && setStatementPackageFilter(v)}
+                >
+                  <SelectTrigger id="statement-package">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_PACKAGES}>Both (all packages)</SelectItem>
+                    {groups.map((g) => (
+                      <SelectItem key={g.label} value={g.label}>
+                        {g.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  This student is billed under more than one package this year. Choose one to
+                  print just its fees, or Both to include everything.
+                </p>
+              </div>
+            );
+          })()}
           <DialogFooter showCloseButton>
             <Button
               onClick={() => {
@@ -548,8 +716,8 @@ function StudentsPageInner() {
                   (e) => e.id === statementYearId
                 );
                 if (statementPicker && enrollment) {
-                  printStatement(statementPicker.student, enrollment);
-                  void emailStatementCopy(enrollment.id);
+                  printStatement(statementPicker.student, enrollment, statementPackageFilter);
+                  void emailStatementCopy(enrollment.id, statementPackageFilter);
                   setStatementPicker(null);
                 }
               }}

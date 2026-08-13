@@ -63,12 +63,21 @@ export interface DiagnosisSummary {
   dateOfDiagnosis: string | null;
 }
 
+// Where a snapshot line came from: copied off the enrollment's fee package, or
+// added by hand to this one period. Catalog writes only ever touch PACKAGE rows,
+// so an ad-hoc charge survives every fee edit and delete.
+export type EnrollmentFeeSource = "PACKAGE" | "ADHOC";
+
 // Immutable copy of a fee frozen onto an enrollment at confirmation time —
 // catalog edits/deletes never change these.
 export interface EnrollmentFeeSummary {
   id: string;
   name: string;
   amount: string;
+  source: EnrollmentFeeSource;
+  // Which package this line was copied from, frozen so it still knows its
+  // group after the catalog moves on. Null for a hand-typed one-off charge.
+  packageName: string | null;
 }
 
 // "The student's data as of this school year" — a full copy of the record
@@ -119,6 +128,10 @@ export interface StudentEnrollment {
   status: EnrollmentStatus;
   createdAt: string;
   fees: EnrollmentFeeSummary[];
+  // Which package this period is billed under. feePackageName is the value
+  // frozen at confirmation — null while PENDING/REJECTED.
+  feePackageId: string | null;
+  feePackageName: string | null;
   studentSnapshot: StudentDataSnapshot | null;
 }
 
@@ -129,6 +142,8 @@ export interface LatestEnrollmentSummary {
   status: EnrollmentStatus;
   // Empty while PENDING/REJECTED; snapshotted at confirmation.
   fees: EnrollmentFeeSummary[];
+  feePackageId: string | null;
+  feePackageName: string | null;
 }
 
 export interface Student {
@@ -184,12 +199,34 @@ export interface Student {
   updatedAt: string;
 }
 
-// Global fee catalog item (tuition, miscellaneous, curriculum, ...) — applies
-// to every enrolled student's account. Prisma Decimal serializes as a string.
+// A named bundle of fee line items ("Package A", "Whole Day"). Each package
+// owns its own items with its own amounts, so "Tuition" costs a different
+// amount in each one. An enrollment is billed under exactly one package.
+export interface FeePackage {
+  id: string;
+  name: string;
+  description: string | null;
+  // The fallback used when an enrollment is created without naming a package.
+  // Exactly one package holds this at a time.
+  isDefault: boolean;
+  fees: Fee[];
+  // How many students this package currently bills — the exact population a
+  // rename, fee edit, or delete would reach. Only the list endpoint computes
+  // it, so it's absent on create/update responses (the page carries the
+  // previous value forward, since neither changes who's on the package).
+  currentStudentCount?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// One line item inside a package (tuition, miscellaneous, curriculum, ...).
+// Names are unique per package, not globally. Prisma Decimal serializes as a
+// string.
 export interface Fee {
   id: string;
   name: string;
   amount: string;
+  packageId: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -240,6 +277,10 @@ export interface Enrollment {
   createdBy: { id: string; firstName: string; lastName: string };
   // Frozen fee snapshot; empty while PENDING/REJECTED.
   fees: EnrollmentFeeSummary[];
+  // Which package this period is billed under. feePackageName is the value
+  // frozen at confirmation — null while PENDING/REJECTED.
+  feePackageId: string | null;
+  feePackageName: string | null;
   // Frozen student-data snapshot; null while PENDING/REJECTED.
   studentSnapshot: StudentDataSnapshot | null;
 }
@@ -318,6 +359,13 @@ export type StudentCreateInput = {
   strengthsAndInterests?: string;
   // Initial enrollment period
   schoolYear: string;
+  // Which fee package the period is billed under. Optional — omitting it bills
+  // the period under whichever package is marked default.
+  feePackageId?: string;
+  // Extra packages picked alongside the primary one — their fees land as
+  // ADHOC lines, same effect as Edit Fees' "Add a whole package" done in the
+  // same request. A duplicate of feePackageId is filtered out server-side.
+  additionalFeePackageIds?: string[];
   // Section 8: Consents
   emergencyMedicalConsent: boolean;
   therapyAssessmentConsent: boolean;

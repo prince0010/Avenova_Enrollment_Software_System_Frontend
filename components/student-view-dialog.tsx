@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type { EscortSummary, Student } from "@/lib/types";
+import type { EnrollmentFeeSummary, EscortSummary, Student } from "@/lib/types";
 import {
   ApiClientError,
   fetchBirthCertificate,
@@ -10,6 +10,7 @@ import {
   fetchStudentPhoto,
 } from "@/lib/api-client";
 import { formatPeso } from "@/lib/format";
+import { groupEnrollmentFees } from "@/lib/fee-groups";
 import { TruncatedText } from "@/components/truncated-text";
 import {
   Dialog,
@@ -55,6 +56,60 @@ function Section({
 
 function fmtDate(v: string | null) {
   return v ? new Date(v).toLocaleDateString() : null;
+}
+
+// One Section per package group, each with its own subtotal, plus a grand
+// total below when there's more than one group — the common single-package
+// case stays exactly as compact as before (one section, "Total" as its last
+// row), rather than showing a redundant subtotal-then-grand-total pair.
+function EnrollmentFeesSections({
+  fees,
+  ownPackageName,
+}: {
+  fees: EnrollmentFeeSummary[];
+  ownPackageName: string | null;
+}) {
+  if (fees.length === 0) return null;
+  const groups = groupEnrollmentFees(fees, ownPackageName);
+  const grandTotal = fees.reduce((sum, f) => sum + Number(f.amount), 0);
+
+  return (
+    <>
+      {groups.map((group) => {
+        const subtotal = group.fees.reduce((sum, f) => sum + Number(f.amount), 0);
+        return (
+          <Section
+            key={group.label}
+            title={`Fees (as of enrollment) — ${group.label}`}
+            rows={[
+              ...group.fees.map((f): [string, ReactNode] => [
+                // Ad-hoc charges were added to this student directly rather
+                // than coming from the package's own frozen snapshot.
+                f.source === "ADHOC" ? `${f.name} (added)` : f.name,
+                <span key={f.id} className="tabular-nums">
+                  {formatPeso(f.amount)}
+                </span>,
+              ]),
+              [
+                groups.length > 1 ? "Subtotal" : "Total",
+                <span key="subtotal" className="font-medium tabular-nums">
+                  {formatPeso(subtotal)}
+                </span>,
+              ],
+            ]}
+          />
+        );
+      })}
+      {groups.length > 1 && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Grand total
+          </span>
+          <span className="font-medium tabular-nums">{formatPeso(grandTotal)}</span>
+        </div>
+      )}
+    </>
+  );
 }
 
 function errorMessage(err: unknown, fallback: string) {
@@ -282,25 +337,10 @@ export function StudentViewDialog({
                     ["Strengths / interests", student.strengthsAndInterests],
                   ]}
                 />
-                {enrollmentFees.length > 0 && (
-                  <Section
-                    title="Fees (as of enrollment)"
-                    rows={[
-                      ...enrollmentFees.map((f): [string, ReactNode] => [
-                        f.name,
-                        <span key={f.id} className="tabular-nums">
-                          {formatPeso(f.amount)}
-                        </span>,
-                      ]),
-                      [
-                        "Total",
-                        <span key="total" className="font-medium tabular-nums">
-                          {formatPeso(enrollmentFees.reduce((sum, f) => sum + Number(f.amount), 0))}
-                        </span>,
-                      ],
-                    ]}
-                  />
-                )}
+                <EnrollmentFeesSections
+                  fees={enrollmentFees}
+                  ownPackageName={student.latestEnrollment?.feePackageName ?? null}
+                />
               </div>
             </>
           )}

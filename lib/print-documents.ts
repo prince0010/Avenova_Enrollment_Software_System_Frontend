@@ -92,6 +92,9 @@ const DOCUMENT_STYLES = `
   th { background: #f2f2f2; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
   td.amount, th.amount { text-align: right; font-variant-numeric: tabular-nums; }
   tr.total td { font-weight: bold; border-top: 2px solid #111; }
+  tr.group-header td { background: #f2f2f2; font-weight: bold; text-transform: uppercase;
+    font-size: 11px; letter-spacing: 0.5px; }
+  tr.subtotal td { font-weight: bold; border-top: 1px solid #999; }
   .field { font-size: 13px; margin: 10px 0; }
   .field .label { color: #555; }
   .field .value { font-weight: bold; border-bottom: 1px solid #111; padding: 0 6px 2px; }
@@ -135,26 +138,59 @@ function schoolHeader() {
     </div>`;
 }
 
-function feeRows(fees: { name: string; amount: string }[]) {
-  const total = fees.reduce((sum, f) => sum + Number(f.amount), 0);
-  const rows = fees
-    .map(
-      (f) => `
+export interface StatementFeeGroup {
+  label: string;
+  fees: { name: string; amount: string }[];
+}
+
+// One group renders as a flat table (no group-header/subtotal rows, matching
+// the pre-packages layout exactly) — the common case, a student on one
+// package. Two or more groups get a header row per package plus a subtotal,
+// so "Both" reads as clearly separated sections rather than an ambiguous
+// merged pile, mirroring the on-screen View dialog and Edit fees dialog.
+function feeRows(groups: StatementFeeGroup[]) {
+  const showGroups = groups.length > 1;
+  let grandTotal = 0;
+  const rows = groups
+    .map((g) => {
+      const subtotal = g.fees.reduce((sum, f) => sum + Number(f.amount), 0);
+      grandTotal += subtotal;
+      const header = showGroups
+        ? `<tr class="group-header"><td colspan="2">${escapeHtml(g.label)}</td></tr>`
+        : "";
+      const itemRows = g.fees
+        .map(
+          (f) => `
         <tr>
           <td>${escapeHtml(f.name)}</td>
           <td class="amount">${formatPeso(f.amount)}</td>
         </tr>`
-    )
+        )
+        .join("");
+      const subtotalRow = showGroups
+        ? `<tr class="subtotal"><td>Subtotal</td><td class="amount">${formatPeso(subtotal)}</td></tr>`
+        : "";
+      return header + itemRows + subtotalRow;
+    })
     .join("");
-  return { rows, total };
+  return { rows, total: grandTotal, totalLabel: showGroups ? "Grand Total" : "Total" };
 }
 
 // The statement covers ONE enrollment period (school year) and its frozen fee
 // snapshot — so a years-old statement reprints with that year's fees, not
-// today's catalog.
+// today's catalog. `groups` is whatever the caller has already filtered down
+// to (every package the student has fees under, or just one) — this module
+// doesn't know about the filtering choice, it just renders what it's given.
+// `packageLabel` is purely the meta-line description of that choice
+// ("All packages" / a specific package name).
 export interface StatementEnrollment {
   schoolYear: string;
-  fees: { name: string; amount: string }[];
+  groups: StatementFeeGroup[];
+  packageLabel?: string;
+  // True when the caller narrowed this printout to fewer than all of the
+  // student's package groups, rather than showing everything on the account —
+  // only used to add the "other charges not included" caveat below the table.
+  isFiltered?: boolean;
 }
 
 export function buildStatementOfAccountHtml(
@@ -162,7 +198,7 @@ export function buildStatementOfAccountHtml(
   enrollment: StatementEnrollment,
   preparedBy: string
 ): string {
-  const { rows, total } = feeRows(enrollment.fees);
+  const { rows, total, totalLabel } = feeRows(enrollment.groups);
   const issued = new Date().toLocaleDateString(undefined, {
     year: "numeric",
     month: "long",
@@ -182,18 +218,31 @@ export function buildStatementOfAccountHtml(
         <p><span class="label">Enrolled:</span> ${new Date(enrollment.schoolYear).toLocaleDateString()}</p>
       </div>
     </div>
+    ${
+      enrollment.packageLabel
+        ? `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:bold;margin:0 0 12px;padding-bottom:6px;border-bottom:1px solid #999;">
+      <span>Package</span>
+      <span>${escapeHtml(enrollment.packageLabel)}</span>
+    </div>`
+        : ""
+    }
     <table>
       <thead>
         <tr><th>Description</th><th class="amount">Amount</th></tr>
       </thead>
       <tbody>
         ${rows || `<tr><td colspan="2">No fees recorded for this enrollment.</td></tr>`}
-        <tr class="total"><td>Total</td><td class="amount">${formatPeso(total)}</td></tr>
+        <tr class="total"><td>${totalLabel}</td><td class="amount">${formatPeso(total)}</td></tr>
       </tbody>
     </table>
     <p class="note">
       This statement reflects the fees recorded at enrollment confirmation.
       Amounts are frozen per enrollment period and are not affected by later fee changes.
+      ${
+        enrollment.isFiltered && enrollment.packageLabel
+          ? ` This copy shows ${escapeHtml(enrollment.packageLabel)} only — other charges on this account are not included.`
+          : ""
+      }
     </p>
     <div class="signatures">
       <div class="signature">

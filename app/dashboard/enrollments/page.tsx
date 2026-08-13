@@ -11,9 +11,11 @@ import {
 import type { Enrollment, Student } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { buildStatementOfAccountHtml, openPrintWindow } from "@/lib/print-documents";
+import { groupEnrollmentFees } from "@/lib/fee-groups";
 import { EnrollmentViewDialog } from "@/components/enrollment-view-dialog";
 import { EnrollmentSnapshotDialog } from "@/components/enrollment-snapshot-dialog";
 import { OfficialReceiptDialog } from "@/components/official-receipt-dialog";
+import { EnrollmentChargesDialog } from "@/components/enrollment-charges-dialog";
 import { TablePagination } from "@/components/table-pagination";
 import { TableSkeletonBody } from "@/components/table-skeleton";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,6 +59,8 @@ import {
 } from "@/components/ui/table";
 
 const ALL_SCHOOL_YEARS = "__all__";
+// "" (no filter) shows every package the enrollment has fees under ("Both").
+const ALL_PACKAGES = "";
 
 function schoolYearLabel(schoolYear: string) {
   return String(new Date(schoolYear).getFullYear());
@@ -83,6 +95,38 @@ export default function EnrollmentsPage() {
   const [viewing, setViewing] = useState<Enrollment | null>(null);
   const [snapshotViewing, setSnapshotViewing] = useState<Enrollment | null>(null);
   const [receiptFor, setReceiptFor] = useState<Student | null>(null);
+  const [chargesFor, setChargesFor] = useState<Enrollment | null>(null);
+  // Only opened when a row is billed under more than one package — a single
+  // click still prints immediately for the common single-package case, same
+  // as before this feature existed.
+  const [statementPicker, setStatementPicker] = useState<Enrollment | null>(null);
+  const [statementPackageFilter, setStatementPackageFilter] = useState<string>(ALL_PACKAGES);
+
+  // Keeps the row's frozen snapshot current after a one-off charge is added or
+  // removed, so a Statement printed straight afterwards shows the new total.
+  function handleFeesChanged(enrollmentId: string, fees: Enrollment["fees"]) {
+    setEnrollments((list) =>
+      list ? list.map((e) => (e.id === enrollmentId ? { ...e, fees } : e)) : list
+    );
+    setChargesFor((cur) => (cur && cur.id === enrollmentId ? { ...cur, fees } : cur));
+  }
+
+  // Removing the current package clears more than just the fee list — the
+  // enrollment's own package assignment goes to null too, so the row (and the
+  // Charges dialog's own "Billed under X" line next time it opens) needs to
+  // reflect that it's no longer billed under anything.
+  function handlePackageUnassigned(enrollmentId: string) {
+    setEnrollments((list) =>
+      list
+        ? list.map((e) =>
+            e.id === enrollmentId ? { ...e, feePackageId: null, feePackageName: null } : e
+          )
+        : list
+    );
+    setChargesFor((cur) =>
+      cur && cur.id === enrollmentId ? { ...cur, feePackageId: null, feePackageName: null } : cur
+    );
+  }
   // Transient status for the "Statement of Account" menu item's email side
   // effect, separate from actionError (which covers other row actions).
   const [emailNotice, setEmailNotice] = useState<{
@@ -90,20 +134,31 @@ export default function EnrollmentsPage() {
     message: string;
   } | null>(null);
 
-  // This page's rows ARE enrollment periods, so the statement prints exactly
-  // this row's school year and frozen fee snapshot — no year picker needed.
-  // Also emails the same fee snapshot to the student's own email as a backup
-  // copy for the parent, same as the Students page's Generate button.
-  function printStatement(e: Enrollment) {
+  // This page's rows ARE enrollment periods, so the statement covers exactly
+  // this row's school year — no year picker needed. packageFilter is
+  // ALL_PACKAGES ("Both") or one package's label from groupEnrollmentFees; the
+  // emailed backup copy is filtered identically so the two always agree.
+  function printStatement(e: Enrollment, packageFilter: string) {
+    const allGroups = groupEnrollmentFees(e.fees, e.feePackageName);
+    const groups = packageFilter
+      ? allGroups.filter((g) => g.label === packageFilter)
+      : allGroups;
+    const packageLabel =
+      packageFilter || (allGroups.length > 1 ? "All packages" : allGroups[0]?.label);
     openPrintWindow(
       `Statement of Account — ${e.student.studentName}`,
       buildStatementOfAccountHtml(
         e.student,
-        { schoolYear: e.schoolYear, fees: e.fees },
+        {
+          schoolYear: e.schoolYear,
+          groups,
+          packageLabel,
+          isFiltered: Boolean(packageFilter),
+        },
         user ? `${user.firstName} ${user.lastName}` : ""
       )
     );
-    emailStatementOfAccount(e.id)
+    emailStatementOfAccount(e.id, packageFilter || undefined)
       .then(({ message }) => setEmailNotice({ type: "success", message }))
       .catch((err) =>
         setEmailNotice({
@@ -114,6 +169,20 @@ export default function EnrollmentsPage() {
               : "Failed to email the statement of account.",
         })
       );
+  }
+
+  // A row billed under one package prints straight away, same one-click
+  // behavior as before. Only when there's an actual choice does a picker
+  // appear — asking which package for a student who only has one would be
+  // pure friction.
+  function handleStatementClick(e: Enrollment) {
+    const groups = groupEnrollmentFees(e.fees, e.feePackageName);
+    if (groups.length > 1) {
+      setStatementPackageFilter(ALL_PACKAGES);
+      setStatementPicker(e);
+    } else {
+      printStatement(e, ALL_PACKAGES);
+    }
   }
 
   // The receipt dialog needs the full student record (parent names, latest
@@ -355,7 +424,10 @@ export default function EnrollmentsPage() {
                                   Student data (this year)
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuItem onClick={() => printStatement(e)}>
+                              <DropdownMenuItem onClick={() => setChargesFor(e)}>
+                                Edit Fees
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleStatementClick(e)}>
                                 Statement of Account
                               </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => handleReceipt(e)}>
@@ -399,6 +471,78 @@ export default function EnrollmentsPage() {
         open={receiptFor !== null}
         onOpenChange={(open) => !open && setReceiptFor(null)}
       />
+      <EnrollmentChargesDialog
+        target={
+          chargesFor && {
+            enrollmentId: chargesFor.id,
+            studentName: chargesFor.student.studentName,
+            schoolYear: chargesFor.schoolYear,
+            feePackageName: chargesFor.feePackageName,
+            fees: chargesFor.fees,
+          }
+        }
+        open={chargesFor !== null}
+        onOpenChange={(open) => !open && setChargesFor(null)}
+        onFeesChanged={handleFeesChanged}
+        onPackageUnassigned={handlePackageUnassigned}
+      />
+
+      <Dialog
+        open={statementPicker !== null}
+        onOpenChange={(open) => !open && setStatementPicker(null)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Statement of Account</DialogTitle>
+            <DialogDescription>
+              {statementPicker?.student.studentName} is billed under more than one package for{" "}
+              {statementPicker ? schoolYearLabel(statementPicker.schoolYear) : ""}. Choose one to
+              print just its fees, or Both to include everything.
+            </DialogDescription>
+          </DialogHeader>
+          {statementPicker && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="row-statement-package">Fee package</Label>
+              <Select
+                items={[
+                  { value: ALL_PACKAGES, label: "Both (all packages)" },
+                  ...groupEnrollmentFees(statementPicker.fees, statementPicker.feePackageName).map(
+                    (g) => ({ value: g.label, label: g.label })
+                  ),
+                ]}
+                value={statementPackageFilter}
+                onValueChange={(v) => v != null && setStatementPackageFilter(v)}
+              >
+                <SelectTrigger id="row-statement-package">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_PACKAGES}>Both (all packages)</SelectItem>
+                  {groupEnrollmentFees(statementPicker.fees, statementPicker.feePackageName).map(
+                    (g) => (
+                      <SelectItem key={g.label} value={g.label}>
+                        {g.label}
+                      </SelectItem>
+                    )
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <DialogFooter showCloseButton>
+            <Button
+              onClick={() => {
+                if (statementPicker) {
+                  printStatement(statementPicker, statementPackageFilter);
+                  setStatementPicker(null);
+                }
+              }}
+            >
+              Generate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,8 +1,10 @@
 import type {
   ApiErrorBody,
   Enrollment,
+  EnrollmentFeeSummary,
   EnrollmentStatPoint,
   Fee,
+  FeePackage,
   FeeVersion,
   PublicUser,
   Receipt,
@@ -343,15 +345,19 @@ export async function restoreStudent(id: string) {
   });
 }
 
-export async function listFees() {
-  return apiFetchJson<{ fees: Fee[] }>("/fees");
+// Flat list across every package, or one package's items when packageId is
+// given. For the package-shaped view use listFeePackages().
+export async function listFees(packageId?: string) {
+  const query = packageId ? `?packageId=${encodeURIComponent(packageId)}` : "";
+  return apiFetchJson<{ fees: Fee[] }>(`/fees${query}`);
 }
 
 export async function getFeeHistory(id: string) {
   return apiFetchJson<{ versions: FeeVersion[] }>(`/fees/${id}/history`);
 }
 
-export async function createFee(data: { name: string; amount: number }) {
+// packageId is required — every line item belongs to exactly one package.
+export async function createFee(data: { name: string; amount: number; packageId: string }) {
   return apiFetchJson<{ fee: Fee }>("/fees", {
     method: "POST",
     body: JSON.stringify(data),
@@ -371,6 +377,88 @@ export async function deleteFee(id: string) {
   });
 }
 
+// Each package comes back with its line items nested — the Fees page renders
+// package by package rather than as one flat catalog.
+export async function listFeePackages() {
+  return apiFetchJson<{ feePackages: FeePackage[] }>("/fee-packages");
+}
+
+export async function getFeePackage(id: string) {
+  return apiFetchJson<{ feePackage: FeePackage }>(`/fee-packages/${id}`);
+}
+
+// `fees` is optional — a package can be created empty and filled in via createFee.
+export async function createFeePackage(data: {
+  name: string;
+  description?: string;
+  isDefault?: boolean;
+  fees?: { name: string; amount: number }[];
+}) {
+  return apiFetchJson<{ feePackage: FeePackage }>("/fee-packages", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// Setting isDefault demotes whichever package currently holds the flag.
+export async function updateFeePackage(
+  id: string,
+  data: { name?: string; description?: string; isDefault?: boolean }
+) {
+  return apiFetchJson<{ feePackage: FeePackage }>(`/fee-packages/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+// Strips the package's fees from every student currently on it. ADMIN only,
+// and the backend 400s on the default package — reassign the default first.
+export async function deleteFeePackage(id: string) {
+  return apiFetchJson<{ message: string }>(`/fee-packages/${id}`, {
+    method: "DELETE",
+  });
+}
+
+// A one-off charge on top of this period's package (late fee, materials).
+// Requires a CONFIRMED enrollment; only source === "ADHOC" rows can be edited
+// or removed — package rows are managed through the fee catalog.
+export async function addEnrollmentFee(
+  enrollmentId: string,
+  data: { name: string; amount: number; packageName?: string }
+) {
+  return apiFetchJson<{ fee: EnrollmentFeeSummary }>(`/enrollments/${enrollmentId}/fees`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateEnrollmentFee(
+  enrollmentId: string,
+  feeId: string,
+  data: { name?: string; amount?: number }
+) {
+  return apiFetchJson<{ fee: EnrollmentFeeSummary }>(
+    `/enrollments/${enrollmentId}/fees/${feeId}`,
+    { method: "PATCH", body: JSON.stringify(data) }
+  );
+}
+
+export async function deleteEnrollmentFee(enrollmentId: string, feeId: string) {
+  return apiFetchJson<{ message: string }>(`/enrollments/${enrollmentId}/fees/${feeId}`, {
+    method: "DELETE",
+  });
+}
+
+// Removes the student's whole current fee package from this enrollment —
+// every PACKAGE-sourced fee line AND the feePackageId/feePackageName
+// assignment itself, atomically. Distinct from deleteEnrollmentFee, which
+// only ever removes one ADHOC row and 400s on PACKAGE ones.
+export async function unassignEnrollmentFeePackage(enrollmentId: string) {
+  return apiFetchJson<{ enrollment: Enrollment }>(`/enrollments/${enrollmentId}/package`, {
+    method: "DELETE",
+  });
+}
+
 // All enrollment periods of one student, each with its frozen fee snapshot.
 export async function listStudentEnrollments(studentId: string) {
   return apiFetchJson<{ enrollments: StudentEnrollment[] }>(`/students/${studentId}/enrollments`);
@@ -383,6 +471,9 @@ export async function createEnrollmentForStudent(
   studentId: string,
   data: {
     schoolYear: string;
+    // Omitting it bills the new period under the default package rather than
+    // reusing last year's — the current price list wins unless stated.
+    feePackageId?: string;
     emergencyMedicalConsent: boolean;
     therapyAssessmentConsent: boolean;
     policyAcknowledgement: boolean;
@@ -415,9 +506,12 @@ export async function listPendingEnrollments() {
   return apiFetchJson<{ enrollments: Enrollment[] }>("/enrollments/pending");
 }
 
-export async function confirmEnrollment(id: string) {
+// feePackageId overrides the package the submission chose — the last moment
+// before the fee snapshot freezes. Omit to keep whatever was submitted.
+export async function confirmEnrollment(id: string, feePackageId?: string) {
   return apiFetchJson<{ enrollment: Enrollment }>(`/enrollments/${id}/confirm`, {
     method: "POST",
+    ...(feePackageId ? { body: JSON.stringify({ feePackageId }) } : {}),
   });
 }
 
@@ -431,9 +525,15 @@ export async function rejectEnrollment(id: string, reason?: string) {
 // Emails a backup copy of this enrollment period's Statement of Account
 // (same fee snapshot as the printed version) to the student's own email —
 // the backend renders it server-side, so no body is needed here.
-export async function emailStatementOfAccount(enrollmentId: string) {
+// packageName narrows the emailed backup copy to one package's lines, meant to
+// always match whatever the admin filtered the printed statement to in the
+// same dialog.
+export async function emailStatementOfAccount(enrollmentId: string, packageName?: string) {
   return apiFetchJson<{ ok: boolean; message: string }>(
     `/enrollments/${enrollmentId}/statement/email`,
-    { method: "POST" }
+    {
+      method: "POST",
+      ...(packageName ? { body: JSON.stringify({ packageName }) } : {}),
+    }
   );
 }

@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MoreHorizontal } from "lucide-react";
 import {
   listPendingEnrollments,
+  listFeePackages,
   confirmEnrollment,
   rejectEnrollment,
   ApiClientError,
 } from "@/lib/api-client";
-import type { Enrollment } from "@/lib/types";
+import type { Enrollment, FeePackage } from "@/lib/types";
+import { formatPeso } from "@/lib/format";
 import { EnrollmentViewDialog } from "@/components/enrollment-view-dialog";
 import { TablePagination } from "@/components/table-pagination";
 import { TableSkeletonBody } from "@/components/table-skeleton";
@@ -37,6 +39,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -57,6 +66,29 @@ export default function PendingPage() {
   const [confirming, setConfirming] = useState<Enrollment | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  // Confirmation is the last moment before the fee snapshot freezes, so the
+  // reviewing admin can correct the package the submitter chose.
+  const [feePackages, setFeePackages] = useState<FeePackage[]>([]);
+  const [confirmPackageId, setConfirmPackageId] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    listFeePackages()
+      .then((res) => {
+        if (!cancelled) setFeePackages(res.feePackages);
+      })
+      .catch(() => {
+        if (!cancelled) setFeePackages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const feePackageItems = useMemo(
+    () => feePackages.map((p) => ({ value: p.id, label: p.name })),
+    [feePackages]
+  );
+  const confirmPackage = feePackages.find((p) => p.id === confirmPackageId) ?? null;
 
   const [rejecting, setRejecting] = useState<Enrollment | null>(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -90,7 +122,13 @@ export default function PendingPage() {
     setConfirmError(null);
     setIsConfirming(true);
     try {
-      await confirmEnrollment(confirming.id);
+      // Only sent when it differs from what was submitted — otherwise the
+      // backend keeps the submission's own choice.
+      const override =
+        confirmPackageId && confirmPackageId !== confirming.feePackageId
+          ? confirmPackageId
+          : undefined;
+      await confirmEnrollment(confirming.id, override);
       setEnrollments((list) =>
         list ? list.filter((e) => e.id !== confirming.id) : list
       );
@@ -221,6 +259,9 @@ export default function PendingPage() {
                               <DropdownMenuItem
                                 onClick={() => {
                                   setConfirmError(null);
+                                  // Start from what the submitter chose; the
+                                  // admin can change it before confirming.
+                                  setConfirmPackageId(e.feePackageId ?? "");
                                   setConfirming(e);
                                 }}
                               >
@@ -278,6 +319,48 @@ export default function PendingPage() {
               enrollment will move to the Enrolled list.
             </DialogDescription>
           </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="confirm-fee-package">Fee package</Label>
+            <Select
+              items={feePackageItems}
+              value={confirmPackageId}
+              onValueChange={(v) => v && setConfirmPackageId(v)}
+            >
+              <SelectTrigger id="confirm-fee-package">
+                <SelectValue placeholder="Select a fee package" />
+              </SelectTrigger>
+              <SelectContent>
+                {feePackages.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                    {p.isDefault ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              These amounts freeze onto the record the moment you confirm — this is the last
+              chance to change them.
+            </p>
+            {confirmPackage && confirmPackage.fees.length > 0 && (
+              <div className="mt-1 flex flex-col gap-0.5 rounded-lg border p-3 text-xs">
+                {confirmPackage.fees.map((f) => (
+                  <div key={f.id} className="flex justify-between text-muted-foreground">
+                    <span>{f.name}</span>
+                    <span className="tabular-nums">{formatPeso(f.amount)}</span>
+                  </div>
+                ))}
+                <div className="mt-1 flex justify-between border-t pt-1 font-medium">
+                  <span>Total</span>
+                  <span className="tabular-nums">
+                    {formatPeso(
+                      confirmPackage.fees.reduce((sum, f) => sum + Number(f.amount), 0)
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
           {confirmError && (
             <p className="text-sm text-destructive">{confirmError}</p>
           )}

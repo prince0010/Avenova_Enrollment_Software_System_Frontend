@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
-import type { Enrollment, Gender, Student, StudentUpdateInput } from "@/lib/types";
+import type { Enrollment, FeePackage, Gender, Student, StudentUpdateInput } from "@/lib/types";
 import { BIRTH_CERT_MAX_BYTES, IMAGE_MAX_BYTES, fileSizeError } from "@/lib/upload-limits";
+import { formatPeso } from "@/lib/format";
 import {
   createEnrollmentForStudent,
+  listFeePackages,
   updateStudent,
   uploadStudentPhoto,
   uploadBirthCertificate,
@@ -267,6 +269,35 @@ function ReEnrollForm({
     );
   }
   const [schoolYear, setSchoolYear] = useState("");
+
+  // Which fee package this new period is billed under. Re-enrollment
+  // deliberately starts from the default rather than last year's package —
+  // the current price list wins unless the admin says otherwise.
+  const [feePackages, setFeePackages] = useState<FeePackage[]>([]);
+  const [feePackageId, setFeePackageId] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    listFeePackages()
+      .then((res) => {
+        if (cancelled) return;
+        setFeePackages(res.feePackages);
+        // Preselect the default so the dropdown never starts blank and the
+        // submitted value matches what the backend would have picked anyway.
+        setFeePackageId((cur) => cur || res.feePackages.find((p) => p.isDefault)?.id || "");
+      })
+      .catch(() => {
+        if (!cancelled) setFeePackages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const feePackageItems = useMemo(
+    () => feePackages.map((p) => ({ value: p.id, label: p.name })),
+    [feePackages]
+  );
+  const selectedPackage = feePackages.find((p) => p.id === feePackageId) ?? null;
+
   const [consents, setConsents] = useState<Record<ConsentKey, boolean>>({
     emergencyMedicalConsent: false,
     therapyAssessmentConsent: false,
@@ -449,9 +480,11 @@ function ReEnrollForm({
         ).student;
       }
 
-      // 5. The new enrollment period — snapshots fees + student data.
+      // 5. The new enrollment period — snapshots the chosen package's fees +
+      // student data.
       const { enrollment } = await createEnrollmentForStudent(student.id, {
         schoolYear,
+        ...(feePackageId ? { feePackageId } : {}),
         ...consents,
       });
       onEnrolled(enrollment, updatedStudent);
@@ -896,6 +929,53 @@ function ReEnrollForm({
                 onChange={(e) => setSchoolYear(e.target.value)}
               />
             </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="re-enroll-fee-package">Fee package</Label>
+              <Select
+                items={feePackageItems}
+                value={feePackageId}
+                onValueChange={(v) => v && setFeePackageId(v)}
+              >
+                <SelectTrigger id="re-enroll-fee-package">
+                  <SelectValue placeholder="Select a fee package" />
+                </SelectTrigger>
+                <SelectContent>
+                  {feePackages.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                      {p.isDefault ? " (default)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                These amounts freeze onto this school year at confirmation — later catalog
+                changes won&apos;t alter them.
+              </p>
+              {selectedPackage && selectedPackage.fees.length > 0 && (
+                <div className="mt-1 flex flex-col gap-0.5 rounded-lg border p-3 text-xs">
+                  {selectedPackage.fees.map((f) => (
+                    <div key={f.id} className="flex justify-between text-muted-foreground">
+                      <span>{f.name}</span>
+                      <span className="tabular-nums">{formatPeso(f.amount)}</span>
+                    </div>
+                  ))}
+                  <div className="mt-1 flex justify-between border-t pt-1 font-medium">
+                    <span>Total</span>
+                    <span className="tabular-nums">
+                      {formatPeso(
+                        selectedPackage.fees.reduce((sum, f) => sum + Number(f.amount), 0)
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {selectedPackage && selectedPackage.fees.length === 0 && (
+                <p className="text-xs text-destructive">
+                  This package has no fees — the student would be charged nothing.
+                </p>
+              )}
+            </div>
             <div className="flex flex-col gap-2">
               <p className="text-xs text-muted-foreground">
                 Consents are recaptured every enrollment period — earlier answers don&apos;t
@@ -951,6 +1031,7 @@ function ReEnrollForm({
                 label="Date of enrollment"
                 value={schoolYear ? new Date(schoolYear).toLocaleDateString() : "— required"}
               />
+              <ReviewRow label="Fee package" value={selectedPackage?.name ?? null} />
               <ReviewRow
                 label="Consents"
                 value={`${CONSENTS.filter((c) => consents[c.key]).length}/4 given`}

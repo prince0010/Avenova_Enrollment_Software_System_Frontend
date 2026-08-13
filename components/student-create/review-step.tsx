@@ -60,6 +60,8 @@ export function ReviewStep({
   birthCertificate,
   studentPhoto,
   photoPreviewUrl,
+  feePackageName,
+  additionalPackageNames = [],
 }: {
   values: Record<string, string | boolean>;
   escorts: { name: string; phoneNumber: string; image: File | null }[];
@@ -68,6 +70,10 @@ export function ReviewStep({
   birthCertificate: File | null;
   studentPhoto: File | null;
   photoPreviewUrl: string | null;
+  // Null when no packages exist at all — the backend then charges nothing.
+  feePackageName: string | null;
+  // Extra packages picked alongside the primary one, added as ADHOC charges.
+  additionalPackageNames?: string[];
 }) {
   const s = (k: string) => (values[k] as string) ?? null;
   const b = (k: string) => Boolean(values[k]);
@@ -211,7 +217,14 @@ export function ReviewStep({
           ["Strengths / interests", s("strengthsAndInterests")],
         ]}
       />
-      <Section title="Enrollment" rows={[["Date of Enrollment", s("schoolYear") ? new Date(s("schoolYear")!).toLocaleDateString() : null]]} />
+      <Section
+        title="Enrollment"
+        rows={[
+          ["Date of Enrollment", s("schoolYear") ? new Date(s("schoolYear")!).toLocaleDateString() : null],
+          ["Fee package", feePackageName],
+          ["Additional packages", additionalPackageNames.join(", ") || null],
+        ]}
+      />
       <Section
         title="Consents"
         rows={[
